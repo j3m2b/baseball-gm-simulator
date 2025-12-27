@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { generateInitialCity } from '@/lib/simulation/city-growth';
 import { generateDraftClass } from '@/lib/simulation/draft';
 import { checkForEventsWithTier, serializeEvent, applyEventEffects, type GameState as EventGameState, type NarrativeEvent } from '@/lib/simulation/events';
-import { TIER_CONFIGS, AI_TEAMS, type DifficultyMode, type Tier } from '@/lib/types';
+import { TIER_CONFIGS, AI_TEAMS, FACILITY_CONFIGS, getRosterCapacities, type DifficultyMode, type Tier, type FacilityLevel, type RosterStatus } from '@/lib/types';
 import type { Database } from '@/lib/types/database';
 
 type GameRow = Database['public']['Tables']['games']['Row'];
@@ -140,6 +140,8 @@ export async function createGame(formData: FormData) {
         pitcher_attributes: p.pitcherAttributes,
         hidden_traits: p.hiddenTraits,
         is_drafted: false,
+        media_rank: p.mediaRank,
+        archetype: p.archetype,
       }));
 
       const { error: prospectError } = await supabase
@@ -225,6 +227,40 @@ export async function getSavedGames() {
   }
 
   return games as Pick<GameRow, 'id' | 'city_name' | 'team_name' | 'current_year' | 'current_tier' | 'current_phase' | 'created_at' | 'updated_at'>[];
+}
+
+// ============================================
+// DELETE SAVED GAME
+// ============================================
+
+export async function deleteGame(gameId: string): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+
+  // Verify the game exists and belongs to the current user
+  const { data: game, error: fetchError } = await supabase
+    .from('games')
+    .select('id')
+    .eq('id', gameId)
+    .single();
+
+  if (fetchError || !game) {
+    return { success: false, error: 'Game not found or access denied' };
+  }
+
+  // Delete the game - Supabase will handle cascading deletes
+  // for related tables (players, city_states, current_franchise, etc.)
+  // thanks to ON DELETE CASCADE foreign key constraints
+  const { error: deleteError } = await supabase
+    .from('games')
+    .delete()
+    .eq('id', gameId);
+
+  if (deleteError) {
+    console.error('Error deleting game:', deleteError);
+    return { success: false, error: 'Failed to delete game' };
+  }
+
+  return { success: true };
 }
 
 // ============================================
@@ -459,6 +495,48 @@ export async function draftPlayer(gameId: string, prospectId: string) {
 
   const prospectData = prospect as ProspectRow;
 
+  // Get current roster counts and facility level for Two-Tier System
+  console.log('[draftPlayer] Checking roster capacity...');
+  const { data: franchise } = await supabase
+    .from('current_franchise')
+    .select('facility_level')
+    .eq('game_id', gameId)
+    .single();
+
+  const facilityLevel = ((franchise as { facility_level: FacilityLevel } | null)?.facility_level ?? 0) as FacilityLevel;
+
+  const { data: currentPlayers } = await supabase
+    .from('players')
+    .select('roster_status')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true);
+
+  const rosterCounts = { active: 0, reserve: 0 };
+  if (currentPlayers) {
+    for (const p of currentPlayers as { roster_status: RosterStatus }[]) {
+      if (p.roster_status === 'ACTIVE') rosterCounts.active++;
+      else rosterCounts.reserve++;
+    }
+  }
+
+  // Determine roster status for the new player
+  const capacities = getRosterCapacities(facilityLevel);
+  let rosterStatus: RosterStatus;
+
+  if (rosterCounts.active < capacities.activeMax) {
+    rosterStatus = 'ACTIVE';
+  } else if (rosterCounts.reserve < capacities.reserveMax) {
+    rosterStatus = 'RESERVE';
+  } else {
+    console.log('[draftPlayer] ERROR: Roster is full');
+    return {
+      error: `Roster is full! Active: ${rosterCounts.active}/${capacities.activeMax}, Reserve: ${rosterCounts.reserve}/${capacities.reserveMax}. Release a player or upgrade facilities to continue drafting.`,
+      rosterFull: true,
+    };
+  }
+
+  console.log('[draftPlayer] Assigning to roster:', rosterStatus);
+
   // Mark prospect as drafted
   console.log('[draftPlayer] Marking prospect as drafted...');
   const { error: updateProspectError } = await supabase
@@ -475,7 +553,7 @@ export async function draftPlayer(gameId: string, prospectId: string) {
     return { error: 'Failed to draft player' };
   }
 
-  // Create player record
+  // Create player record with roster status
   console.log('[draftPlayer] Creating player record...');
   const { data: player, error: playerError } = await supabase
     .from('players')
@@ -500,6 +578,7 @@ export async function draftPlayer(gameId: string, prospectId: string) {
       draft_round: draft.current_round,
       draft_pick: draft.current_pick,
       is_on_roster: true,
+      roster_status: rosterStatus,
     } as any)
     .select()
     .single();
@@ -1446,12 +1525,46 @@ export async function completeSeasonSimulation(gameId: string) {
     })
     .eq('game_id', gameId);
 
-  // Check tier promotion eligibility
+  // ============================================
+  // PROGRESSION CHECK (Bankruptcy & Promotion)
+  // ============================================
+
+  const BANKRUPTCY_THRESHOLD = -2000000; // $2M in debt
+  const isBankrupt = newReserves < BANKRUPTCY_THRESHOLD;
+
+  // Update game status if bankrupt
+  if (isBankrupt) {
+    await supabase
+      .from('games')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({
+        status: 'game_over',
+      })
+      .eq('id', gameId);
+
+    // Create game over event
+    await supabase.from('game_events').insert({
+      game_id: gameId,
+      year: gameData.current_year,
+      type: 'story',
+      title: 'Franchise Declared Bankrupt',
+      description: `With debts exceeding $${Math.abs(newReserves / 1000).toFixed(0)}K, the franchise can no longer continue operations. The ownership group has no choice but to shut down.`,
+      is_read: false,
+    } as any);
+  }
+
+  // Check tier promotion eligibility using proper criteria
+  // Requirements: Win% > .550 AND Positive Balance AND Pride > 60
   const tierOrder = ['LOW_A', 'HIGH_A', 'DOUBLE_A', 'TRIPLE_A', 'MLB'];
   const currentTierIndex = tierOrder.indexOf(gameData.current_tier);
-  const tierPromotionEligible = madePlayoffs &&
-    leagueRank === 1 &&
-    currentTierIndex < tierOrder.length - 1;
+  const canPromote = !isBankrupt &&
+    currentTierIndex < tierOrder.length - 1 &&
+    winPct > 0.550 &&
+    newReserves > 0 &&
+    cityGrowth.newPride > 60;
+
+  // Legacy flag for backward compatibility
+  const tierPromotionEligible = canPromote;
 
   // Update season as complete with results
   await supabase
@@ -1631,6 +1744,9 @@ export async function completeSeasonSimulation(gameId: string) {
     success: true,
     results,
     nextPhase,
+    canPromote,
+    isBankrupt,
+    nextTier: canPromote ? tierOrder[currentTierIndex + 1] : null,
   };
 }
 
@@ -1679,4 +1795,370 @@ export async function getSeasonState(gameId: string) {
       isComplete: seasonData.is_complete || false,
     },
   };
+}
+
+// ============================================
+// PROMOTE TO NEXT TIER
+// ============================================
+
+export async function promoteTier(gameId: string) {
+  const supabase = await createClient();
+
+  // Get current game state
+  const { data: game } = await supabase
+    .from('games')
+    .select('*, current_franchise(*), city_states(*)')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) return { error: 'Game not found' };
+
+  const gameData = game as GameRow & {
+    current_franchise: FranchiseRow | null;
+    city_states: CityStateRow | null;
+  };
+
+  const franchise = gameData.current_franchise;
+  const city = gameData.city_states;
+
+  if (!franchise || !city) {
+    return { error: 'Missing franchise or city data' };
+  }
+
+  // Validate promotion eligibility
+  const tierOrder = ['LOW_A', 'HIGH_A', 'DOUBLE_A', 'TRIPLE_A', 'MLB'];
+  const currentTierIndex = tierOrder.indexOf(gameData.current_tier);
+
+  if (currentTierIndex >= tierOrder.length - 1) {
+    return { error: 'Already at MLB tier' };
+  }
+
+  // Get last season to verify eligibility
+  const { data: lastSeason } = await supabase
+    .from('seasons')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('year', gameData.current_year)
+    .single();
+
+  if (!lastSeason) {
+    return { error: 'No season data found' };
+  }
+
+  const seasonData = lastSeason as SeasonRow;
+  const winPct = seasonData.wins && seasonData.losses
+    ? seasonData.wins / (seasonData.wins + seasonData.losses)
+    : 0;
+
+  // Check all promotion requirements
+  if (winPct <= 0.550) {
+    return { error: 'Win percentage must be above .550 for promotion' };
+  }
+  if (franchise.reserves <= 0) {
+    return { error: 'Must have positive reserves for promotion' };
+  }
+  if (city.team_pride <= 60) {
+    return { error: 'City pride must be above 60 for promotion' };
+  }
+
+  // Calculate new tier
+  const newTier = tierOrder[currentTierIndex + 1] as Tier;
+  const newTierConfig = TIER_CONFIGS[newTier];
+
+  // Calculate promotion bonuses
+  const promotionBonuses = {
+    budgetIncrease: newTierConfig.budget - TIER_CONFIGS[gameData.current_tier as Tier].budget,
+    stadiumCapacityIncrease: newTierConfig.stadiumCapacity - franchise.stadium_capacity,
+    prideBonus: 10,
+    recognitionBonus: 15,
+    cashBonus: Math.round(newTierConfig.budget * 0.1), // 10% of new budget as bonus
+  };
+
+  // Update game tier
+  await supabase
+    .from('games')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      current_tier: newTier,
+      current_phase: 'off_season', // Move to off-season after promotion
+      status: newTier === 'MLB' ? 'promoted' : 'active',
+    })
+    .eq('id', gameId);
+
+  // Update franchise with new tier benefits
+  await supabase
+    .from('current_franchise')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      tier: newTier,
+      budget: newTierConfig.budget,
+      reserves: franchise.reserves + promotionBonuses.cashBonus,
+      stadium_capacity: newTierConfig.stadiumCapacity,
+      total_promotions: (franchise.total_promotions || 0) + 1,
+      last_promotion_year: gameData.current_year,
+    })
+    .eq('game_id', gameId);
+
+  // Update city with promotion bonuses
+  await supabase
+    .from('city_states')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      team_pride: Math.min(100, city.team_pride + promotionBonuses.prideBonus),
+      national_recognition: Math.min(100, city.national_recognition + promotionBonuses.recognitionBonus),
+      population: newTierConfig.cityPopulation,
+      median_income: newTierConfig.medianIncome,
+    })
+    .eq('game_id', gameId);
+
+  // Record promotion in history
+  await supabase.from('promotion_history').insert({
+    game_id: gameId,
+    year: gameData.current_year,
+    from_tier: gameData.current_tier,
+    to_tier: newTier,
+    win_pct: winPct,
+    reserves: franchise.reserves,
+    city_pride: city.team_pride,
+    consecutive_winning_seasons: franchise.consecutive_winning_seasons || 0,
+    won_division: seasonData.league_rank === 1,
+    won_championship: false, // TODO: Track playoff results
+  } as any);
+
+  // Create promotion event
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: gameData.current_year,
+    type: 'story',
+    title: `Promoted to ${getTierDisplayName(newTier)}!`,
+    description: `After a stellar season, ownership has approved the franchise's promotion to ${getTierDisplayName(newTier)}! The city is buzzing with excitement as the team prepares for the next level of competition.`,
+    is_read: false,
+  } as any);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return {
+    success: true,
+    previousTier: gameData.current_tier,
+    newTier,
+    bonuses: promotionBonuses,
+  };
+}
+
+function getTierDisplayName(tier: string): string {
+  const names: Record<string, string> = {
+    LOW_A: 'Low-A',
+    HIGH_A: 'High-A',
+    DOUBLE_A: 'Double-A',
+    TRIPLE_A: 'Triple-A',
+    MLB: 'Major League Baseball',
+  };
+  return names[tier] || tier;
+}
+
+// ============================================
+// ROSTER MANAGEMENT (Two-Tier System)
+// ============================================
+
+export async function movePlayer(
+  gameId: string,
+  playerId: string,
+  destination: RosterStatus
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+
+  // Get player data
+  const { data: player } = await supabase
+    .from('players')
+    .select('id, first_name, last_name, roster_status, is_on_roster')
+    .eq('id', playerId)
+    .eq('game_id', gameId)
+    .single();
+
+  if (!player) {
+    return { success: false, error: 'Player not found' };
+  }
+
+  const playerData = player as { id: string; first_name: string; last_name: string; roster_status: RosterStatus; is_on_roster: boolean };
+
+  if (playerData.roster_status === destination) {
+    return { success: false, error: `Player is already on ${destination} roster` };
+  }
+
+  // Get current roster counts and facility level
+  const { data: franchise } = await supabase
+    .from('current_franchise')
+    .select('facility_level')
+    .eq('game_id', gameId)
+    .single();
+
+  if (!franchise) {
+    return { success: false, error: 'Franchise not found' };
+  }
+
+  const facilityLevel = (franchise as { facility_level: FacilityLevel }).facility_level;
+  const capacities = getRosterCapacities(facilityLevel);
+
+  // Get current roster counts
+  const { data: rosterCounts } = await supabase
+    .from('players')
+    .select('roster_status')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true);
+
+  const counts = {
+    active: 0,
+    reserve: 0,
+  };
+
+  if (rosterCounts) {
+    for (const p of rosterCounts as { roster_status: RosterStatus }[]) {
+      if (p.roster_status === 'ACTIVE') counts.active++;
+      else counts.reserve++;
+    }
+  }
+
+  // Validate move
+  if (destination === 'ACTIVE') {
+    if (counts.active >= capacities.activeMax) {
+      return {
+        success: false,
+        error: `Active roster is full (${counts.active}/${capacities.activeMax}). Send a player down first.`,
+      };
+    }
+  } else {
+    if (counts.reserve >= capacities.reserveMax) {
+      return {
+        success: false,
+        error: `Reserve roster is full (${counts.reserve}/${capacities.reserveMax}). Upgrade facilities or release a player.`,
+      };
+    }
+  }
+
+  // Perform the move
+  const { error: updateError } = await supabase
+    .from('players')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({ roster_status: destination })
+    .eq('id', playerId);
+
+  if (updateError) {
+    return { success: false, error: 'Failed to move player' };
+  }
+
+  revalidatePath(`/game/${gameId}`);
+
+  return { success: true };
+}
+
+export async function getRosterCounts(gameId: string): Promise<{
+  active: number;
+  reserve: number;
+  activeMax: number;
+  reserveMax: number;
+  facilityLevel: FacilityLevel;
+}> {
+  const supabase = await createClient();
+
+  // Get facility level
+  const { data: franchise } = await supabase
+    .from('current_franchise')
+    .select('facility_level')
+    .eq('game_id', gameId)
+    .single();
+
+  const facilityLevel = (franchise as { facility_level: FacilityLevel } | null)?.facility_level ?? 0;
+  const capacities = getRosterCapacities(facilityLevel);
+
+  // Get roster counts
+  const { data: players } = await supabase
+    .from('players')
+    .select('roster_status')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true);
+
+  const counts = { active: 0, reserve: 0 };
+
+  if (players) {
+    for (const p of players as { roster_status: RosterStatus }[]) {
+      if (p.roster_status === 'ACTIVE') counts.active++;
+      else counts.reserve++;
+    }
+  }
+
+  return {
+    ...counts,
+    activeMax: capacities.activeMax,
+    reserveMax: capacities.reserveMax,
+    facilityLevel,
+  };
+}
+
+export async function upgradeFacility(gameId: string): Promise<{
+  success: boolean;
+  error?: string;
+  newLevel?: FacilityLevel;
+  cost?: number;
+}> {
+  const supabase = await createClient();
+
+  // Get current franchise state
+  const { data: franchise } = await supabase
+    .from('current_franchise')
+    .select('facility_level, reserves')
+    .eq('game_id', gameId)
+    .single();
+
+  if (!franchise) {
+    return { success: false, error: 'Franchise not found' };
+  }
+
+  const franchiseData = franchise as { facility_level: FacilityLevel; reserves: number };
+  const currentLevel = franchiseData.facility_level;
+  const currentConfig = FACILITY_CONFIGS[currentLevel];
+
+  // Check if already at max level
+  if (currentConfig.upgradeCost === null) {
+    return { success: false, error: 'Facilities are already at maximum level' };
+  }
+
+  // Check if enough reserves
+  if (franchiseData.reserves < currentConfig.upgradeCost) {
+    return {
+      success: false,
+      error: `Not enough reserves. Need $${currentConfig.upgradeCost.toLocaleString()}, have $${franchiseData.reserves.toLocaleString()}`,
+    };
+  }
+
+  const newLevel = (currentLevel + 1) as FacilityLevel;
+  const cost = currentConfig.upgradeCost;
+
+  // Perform the upgrade
+  const { error: updateError } = await supabase
+    .from('current_franchise')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      facility_level: newLevel,
+      reserves: franchiseData.reserves - cost,
+    })
+    .eq('game_id', gameId);
+
+  if (updateError) {
+    return { success: false, error: 'Failed to upgrade facility' };
+  }
+
+  // Create upgrade event
+  const newConfig = FACILITY_CONFIGS[newLevel];
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: 1, // Will be updated with current year
+    type: 'story',
+    title: `Facility Upgraded: ${newConfig.name}`,
+    description: `The franchise has invested in a ${newConfig.name}. Reserve roster capacity has increased to ${newConfig.reserveSlots} players.`,
+    is_read: false,
+  } as any);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return { success: true, newLevel, cost };
 }

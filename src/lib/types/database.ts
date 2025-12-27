@@ -24,6 +24,7 @@ export interface Database {
           current_year: number;
           current_phase: 'pre_season' | 'draft' | 'season' | 'post_season' | 'off_season';
           current_tier: 'LOW_A' | 'HIGH_A' | 'DOUBLE_A' | 'TRIPLE_A' | 'MLB';
+          status: 'active' | 'game_over' | 'promoted' | 'champion' | 'abandoned';
           created_at: string;
           updated_at: string;
         };
@@ -36,6 +37,7 @@ export interface Database {
           current_year?: number;
           current_phase?: 'pre_season' | 'draft' | 'season' | 'post_season' | 'off_season';
           current_tier?: 'LOW_A' | 'HIGH_A' | 'DOUBLE_A' | 'TRIPLE_A' | 'MLB';
+          status?: 'active' | 'game_over' | 'promoted' | 'champion' | 'abandoned';
           created_at?: string;
           updated_at?: string;
         };
@@ -48,6 +50,7 @@ export interface Database {
           current_year?: number;
           current_phase?: 'pre_season' | 'draft' | 'season' | 'post_season' | 'off_season';
           current_tier?: 'LOW_A' | 'HIGH_A' | 'DOUBLE_A' | 'TRIPLE_A' | 'MLB';
+          status?: 'active' | 'game_over' | 'promoted' | 'champion' | 'abandoned';
           created_at?: string;
           updated_at?: string;
         };
@@ -79,6 +82,7 @@ export interface Database {
           is_injured: boolean;
           injury_games_remaining: number;
           is_on_roster: boolean;
+          roster_status: 'ACTIVE' | 'RESERVE';
           draft_year: number;
           draft_round: number;
           draft_pick: number;
@@ -110,6 +114,7 @@ export interface Database {
           is_injured?: boolean;
           injury_games_remaining?: number;
           is_on_roster?: boolean;
+          roster_status?: 'ACTIVE' | 'RESERVE';
           draft_year: number;
           draft_round: number;
           draft_pick: number;
@@ -141,6 +146,7 @@ export interface Database {
           is_injured?: boolean;
           injury_games_remaining?: number;
           is_on_roster?: boolean;
+          roster_status?: 'ACTIVE' | 'RESERVE';
           draft_year?: number;
           draft_round?: number;
           draft_pick?: number;
@@ -166,8 +172,11 @@ export interface Database {
           development_coord_skill: number;
           development_coord_salary: number;
           ticket_price: number;
+          facility_level: 0 | 1 | 2;
           consecutive_winning_seasons: number;
           consecutive_division_titles: number;
+          total_promotions: number;
+          last_promotion_year: number | null;
           updated_at: string;
         };
         Insert: {
@@ -186,8 +195,11 @@ export interface Database {
           development_coord_skill?: number;
           development_coord_salary?: number;
           ticket_price?: number;
+          facility_level?: 0 | 1 | 2;
           consecutive_winning_seasons?: number;
           consecutive_division_titles?: number;
+          total_promotions?: number;
+          last_promotion_year?: number | null;
           updated_at?: string;
         };
         Update: {
@@ -206,9 +218,105 @@ export interface Database {
           development_coord_skill?: number;
           development_coord_salary?: number;
           ticket_price?: number;
+          facility_level?: 0 | 1 | 2;
           consecutive_winning_seasons?: number;
           consecutive_division_titles?: number;
+          total_promotions?: number;
+          last_promotion_year?: number | null;
           updated_at?: string;
+        };
+      };
+
+      promotion_history: {
+        Row: {
+          id: string;
+          game_id: string;
+          year: number;
+          from_tier: string;
+          to_tier: string;
+          win_pct: number;
+          reserves: number;
+          city_pride: number;
+          consecutive_winning_seasons: number;
+          won_division: boolean;
+          won_championship: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          year: number;
+          from_tier: string;
+          to_tier: string;
+          win_pct: number;
+          reserves: number;
+          city_pride: number;
+          consecutive_winning_seasons: number;
+          won_division?: boolean;
+          won_championship?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          game_id?: string;
+          year?: number;
+          from_tier?: string;
+          to_tier?: string;
+          win_pct?: number;
+          reserves?: number;
+          city_pride?: number;
+          consecutive_winning_seasons?: number;
+          won_division?: boolean;
+          won_championship?: boolean;
+          created_at?: string;
+        };
+      };
+
+      game_endings: {
+        Row: {
+          id: string;
+          game_id: string;
+          ending_type: string;
+          year: number;
+          tier: string;
+          final_reserves: number;
+          total_debt: number;
+          final_city_pride: number;
+          total_wins: number;
+          total_losses: number;
+          total_promotions: number;
+          reason: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          ending_type: string;
+          year: number;
+          tier: string;
+          final_reserves: number;
+          total_debt?: number;
+          final_city_pride: number;
+          total_wins?: number;
+          total_losses?: number;
+          total_promotions?: number;
+          reason?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          game_id?: string;
+          ending_type?: string;
+          year?: number;
+          tier?: string;
+          final_reserves?: number;
+          total_debt?: number;
+          final_city_pride?: number;
+          total_wins?: number;
+          total_losses?: number;
+          total_promotions?: number;
+          reason?: string | null;
+          created_at?: string;
         };
       };
 

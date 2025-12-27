@@ -1,9 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency } from '@/lib/utils/format';
+import FacilitiesUpgrade from '../FacilitiesUpgrade';
+import { type FacilityLevel } from '@/lib/types';
 
 interface FinancesTabProps {
   franchise: {
@@ -15,9 +17,11 @@ interface FinancesTabProps {
     hitting_coach_salary: number;
     pitching_coach_salary: number;
     development_coord_salary: number;
+    facility_level: FacilityLevel;
   } | null;
   roster: Array<{
     salary: number;
+    roster_status: 'ACTIVE' | 'RESERVE';
   }>;
   gameId: string;
   currentYear: number;
@@ -239,6 +243,15 @@ export default function FinancesTab({ franchise, roster, gameId, currentYear }: 
           </div>
         </CardContent>
       </Card>
+
+      {/* Facilities Upgrade */}
+      <FacilitiesUpgrade
+        gameId={gameId}
+        facilityLevel={franchise.facility_level}
+        reserves={franchise.reserves}
+        activeCount={roster.filter(p => p.roster_status === 'ACTIVE').length}
+        reserveCount={roster.filter(p => p.roster_status === 'RESERVE').length}
+      />
 
       {/* Stadium & Pricing */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

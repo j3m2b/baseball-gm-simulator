@@ -79,3 +79,21 @@ export {
   type DraftClassConfig,
   type ScoutingResult,
 } from './draft';
+
+// Game Progression
+export {
+  checkPromotionEligibility as checkPromotionEligibilityAdvanced,
+  checkGameStatus,
+  calculatePromotionBonuses,
+  getDebtWarning,
+  getTierDisplayName,
+  getTierLevel,
+  isTopTier,
+  getProgressToNextTier,
+  type PromotionCheckInput,
+  type PromotionEligibility,
+  type GameStatusCheck,
+  type GameStatus,
+  type PromotionResult,
+  type DebtWarning,
+} from './progression';

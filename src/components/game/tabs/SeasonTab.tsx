@@ -15,12 +15,15 @@ import {
 import { formatCurrency } from '@/lib/utils/format';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import PromotionModal from '../PromotionModal';
 
 interface SeasonTabProps {
   gameId: string;
   currentYear: number;
   currentTier: string;
   teamName: string;
+  reserves?: number;
+  cityPride?: number;
 }
 
 interface SeasonProgress {
@@ -64,7 +67,7 @@ interface SeasonResults {
   tierPromotionEligible: boolean;
 }
 
-export default function SeasonTab({ gameId, currentYear, currentTier, teamName }: SeasonTabProps) {
+export default function SeasonTab({ gameId, currentYear, currentTier, teamName, reserves = 0, cityPride = 0 }: SeasonTabProps) {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [isSimulating, setIsSimulating] = useState(false);
@@ -73,6 +76,9 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName }
   const [recentEvents, setRecentEvents] = useState<SeasonEvent[]>([]);
   const [results, setResults] = useState<SeasonResults | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [canPromote, setCanPromote] = useState(false);
+  const [nextTier, setNextTier] = useState<string | null>(null);
+  const [isPromotionModalOpen, setIsPromotionModalOpen] = useState(false);
 
   const tierGameCounts: Record<string, number> = {
     LOW_A: 132,
@@ -156,6 +162,14 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName }
 
       if ('results' in result && result.results) {
         setResults(result.results);
+
+        // Track promotion eligibility
+        if ('canPromote' in result && result.canPromote) {
+          setCanPromote(true);
+          if ('nextTier' in result && result.nextTier) {
+            setNextTier(result.nextTier as string);
+          }
+        }
 
         // Fetch and display toast notifications for narrative events
         const events = await getRecentEvents(gameId, 10);
@@ -340,20 +354,49 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName }
               </Card>
             )}
 
-            {results.tierPromotionEligible && (
-              <Card className="bg-gradient-to-r from-green-900/30 to-green-800/10 border-green-800 mt-6">
-                <CardContent className="py-4">
-                  <div className="flex items-center gap-3">
-                    <Badge className="bg-green-600">Promotion Eligible!</Badge>
-                    <span className="text-green-400">
-                      Your team qualifies for promotion to the next tier!
-                    </span>
+            {canPromote && nextTier && (
+              <Card className="bg-gradient-to-r from-amber-900/30 to-amber-800/10 border-amber-600 mt-6">
+                <CardContent className="py-6">
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 rounded-full bg-amber-600/20 flex items-center justify-center">
+                        <svg className="w-6 h-6 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                        </svg>
+                      </div>
+                      <div>
+                        <Badge className="bg-amber-600 mb-1">Promotion Eligible!</Badge>
+                        <p className="text-gray-300">
+                          Your franchise qualifies for promotion to {formatTier(nextTier)}!
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      onClick={() => setIsPromotionModalOpen(true)}
+                      className="bg-amber-600 hover:bg-amber-500 px-6"
+                    >
+                      Level Up!
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
             )}
           </CardContent>
         </Card>
+
+        {/* Promotion Modal */}
+        {canPromote && nextTier && (
+          <PromotionModal
+            isOpen={isPromotionModalOpen}
+            onClose={() => setIsPromotionModalOpen(false)}
+            gameId={gameId}
+            currentTier={currentTier}
+            nextTier={nextTier}
+            winPercentage={results.winPercentage}
+            reserves={reserves}
+            cityPride={cityPride}
+          />
+        )}
       </div>
     );
   }

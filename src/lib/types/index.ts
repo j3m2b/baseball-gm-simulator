@@ -29,6 +29,12 @@ export type DifficultyMode = 'easy' | 'normal' | 'hard';
 
 export type GamePhase = 'pre_season' | 'draft' | 'season' | 'post_season' | 'off_season';
 
+// Roster Status for Two-Tier System
+export type RosterStatus = 'ACTIVE' | 'RESERVE';
+
+// Facility Levels for Farm System capacity
+export type FacilityLevel = 0 | 1 | 2;
+
 // Player archetypes based on dominant attributes
 export type Archetype =
   | 'Slugger'      // High power hitter
@@ -241,6 +247,7 @@ export interface Player {
   isInjured: boolean;
   injuryGamesRemaining: number;
   isOnRoster: boolean;
+  rosterStatus: RosterStatus; // ACTIVE (25-man) or RESERVE (farm system)
 
   // Draft Info
   draftYear: number;
@@ -252,7 +259,7 @@ export interface Player {
   updatedAt: Date;
 }
 
-export interface DraftProspect extends Omit<Player, 'id' | 'gameId' | 'tier' | 'yearsAtTier' | 'confidence' | 'morale' | 'gamesPlayed' | 'yearsInOrg' | 'salary' | 'contractYears' | 'isInjured' | 'injuryGamesRemaining' | 'isOnRoster' | 'draftYear' | 'draftRound' | 'draftPick' | 'createdAt' | 'updatedAt'> {
+export interface DraftProspect extends Omit<Player, 'id' | 'gameId' | 'tier' | 'yearsAtTier' | 'confidence' | 'morale' | 'gamesPlayed' | 'yearsInOrg' | 'salary' | 'contractYears' | 'isInjured' | 'injuryGamesRemaining' | 'isOnRoster' | 'rosterStatus' | 'draftYear' | 'draftRound' | 'draftPick' | 'createdAt' | 'updatedAt'> {
   prospectId: string;
   scoutedRating: number | null;  // What we think the rating is
   scoutedPotential: number | null;
@@ -263,6 +270,59 @@ export interface DraftProspect extends Omit<Player, 'id' | 'gameId' | 'tier' | '
   // Smart Draft features
   mediaRank: number;        // Consensus rank (1-800) based on potential + noise
   archetype: Archetype;     // Player archetype based on dominant attributes
+}
+
+// ============================================
+// FACILITY CONFIGURATION
+// ============================================
+
+export interface FacilityConfig {
+  level: FacilityLevel;
+  name: string;
+  description: string;
+  reserveSlots: number;
+  upgradeCost: number | null; // null = max level
+}
+
+export const FACILITY_CONFIGS: Record<FacilityLevel, FacilityConfig> = {
+  0: {
+    level: 0,
+    name: 'Basic Dugout',
+    description: 'Standard facilities with minimal farm system capacity.',
+    reserveSlots: 5,
+    upgradeCost: 150000, // Cost to upgrade to Level 1
+  },
+  1: {
+    level: 1,
+    name: 'Minor League Complex',
+    description: 'Dedicated training facility with expanded reserve capacity.',
+    reserveSlots: 20, // +15 slots
+    upgradeCost: 500000, // Cost to upgrade to Level 2
+  },
+  2: {
+    level: 2,
+    name: 'Player Development Lab',
+    description: 'State-of-the-art development center with maximum farm system support.',
+    reserveSlots: 40, // +20 more slots (total 40)
+    upgradeCost: null, // Max level
+  },
+};
+
+// Active roster is always 25
+export const ACTIVE_ROSTER_LIMIT = 25;
+
+// Helper function to get roster capacities based on facility level
+export function getRosterCapacities(facilityLevel: FacilityLevel): {
+  activeMax: number;
+  reserveMax: number;
+  totalMax: number;
+} {
+  const facilityConfig = FACILITY_CONFIGS[facilityLevel];
+  return {
+    activeMax: ACTIVE_ROSTER_LIMIT,
+    reserveMax: facilityConfig.reserveSlots,
+    totalMax: ACTIVE_ROSTER_LIMIT + facilityConfig.reserveSlots,
+  };
 }
 
 // ============================================
@@ -306,6 +366,9 @@ export interface CurrentFranchise {
 
   // Ticket Pricing
   ticketPrice: number;
+
+  // Facilities (Two-Tier Roster System)
+  facilityLevel: FacilityLevel; // 0 = Basic, 1 = Minor League Complex, 2 = Dev Lab
 
   // Progression
   consecutiveWinningSeasons: number;

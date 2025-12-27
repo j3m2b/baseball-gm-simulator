@@ -20,8 +20,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { createGame, getSavedGames } from '@/lib/actions/game';
+import { createGame, getSavedGames, deleteGame } from '@/lib/actions/game';
 import { useEffect } from 'react';
+import { Trash2 } from 'lucide-react';
 
 interface SavedGame {
   id: string;
@@ -39,6 +40,7 @@ export default function Home() {
   const [isLoadGameOpen, setIsLoadGameOpen] = useState(false);
   const [savedGames, setSavedGames] = useState<SavedGame[]>([]);
   const [isCreating, setIsCreating] = useState(false);
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -64,6 +66,33 @@ export default function Home() {
     } catch {
       setError('Failed to create game. Please try again.');
       setIsCreating(false);
+    }
+  }
+
+  async function handleDeleteGame(e: React.MouseEvent, gameId: string, teamName: string) {
+    e.stopPropagation(); // Prevent triggering the load game click
+
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${teamName}"?\n\nThis action cannot be undone.`
+    );
+
+    if (!confirmed) return;
+
+    setIsDeleting(gameId);
+
+    try {
+      const result = await deleteGame(gameId);
+
+      if (result.success) {
+        // Remove the deleted game from the list immediately
+        setSavedGames(prev => prev.filter(game => game.id !== gameId));
+      } else {
+        alert(result.error || 'Failed to delete game');
+      }
+    } catch {
+      alert('Failed to delete game. Please try again.');
+    } finally {
+      setIsDeleting(null);
     }
   }
 
@@ -267,30 +296,49 @@ export default function Home() {
                   </p>
                 ) : (
                   savedGames.map((game) => (
-                    <button
+                    <div
                       key={game.id}
-                      onClick={() => router.push(`/game/${game.id}`)}
-                      className="w-full p-4 text-left rounded-lg border border-gray-700 hover:border-amber-600 hover:bg-gray-800/50 transition-colors"
+                      className="relative group"
                     >
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <h3 className="font-semibold text-white">
-                            {game.team_name}
-                          </h3>
-                          <p className="text-sm text-gray-400">
-                            {game.city_name}
-                          </p>
+                      <button
+                        onClick={() => router.push(`/game/${game.id}`)}
+                        className="w-full p-4 pr-12 text-left rounded-lg border border-gray-700 hover:border-amber-600 hover:bg-gray-800/50 transition-colors"
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h3 className="font-semibold text-white">
+                              {game.team_name}
+                            </h3>
+                            <p className="text-sm text-gray-400">
+                              {game.city_name}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-amber-500 font-medium">
+                              Year {game.current_year}
+                            </span>
+                            <p className="text-xs text-gray-500">
+                              {formatTier(game.current_tier)} • {formatPhase(game.current_phase)}
+                            </p>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <span className="text-amber-500 font-medium">
-                            Year {game.current_year}
-                          </span>
-                          <p className="text-xs text-gray-500">
-                            {formatTier(game.current_tier)} • {formatPhase(game.current_phase)}
-                          </p>
-                        </div>
-                      </div>
-                    </button>
+                      </button>
+                      <button
+                        onClick={(e) => handleDeleteGame(e, game.id, game.team_name)}
+                        disabled={isDeleting === game.id}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md text-gray-500 hover:text-red-500 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
+                        title="Delete save"
+                      >
+                        {isDeleting === game.id ? (
+                          <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
                   ))
                 )}
               </div>

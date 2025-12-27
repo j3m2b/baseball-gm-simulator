@@ -14,6 +14,7 @@ import CityTab from './tabs/CityTab';
 import FinancesTab from './tabs/FinancesTab';
 import HistoryTab from './tabs/HistoryTab';
 import RecentEvents from './dashboard/RecentEvents';
+import GameOver from './GameOver';
 import { formatCurrency } from '@/lib/utils/format';
 
 interface GameDashboardProps {
@@ -24,6 +25,7 @@ interface GameDashboardProps {
     current_year: number;
     current_tier: string;
     current_phase: string;
+    status: string;
     current_franchise: {
       tier: string;
       budget: number;
@@ -35,6 +37,7 @@ interface GameDashboardProps {
       hitting_coach_salary: number;
       pitching_coach_salary: number;
       development_coord_salary: number;
+      facility_level: 0 | 1 | 2;
     } | null;
     city_states: {
       population: number;
@@ -58,6 +61,7 @@ interface GameDashboardProps {
     morale: number;
     tier: string;
     salary: number;
+    roster_status: 'ACTIVE' | 'RESERVE';
   }>;
   draftState: {
     id: string;
@@ -111,6 +115,21 @@ export default function GameDashboard({
 
   const franchise = game.current_franchise;
   const city = game.city_states;
+
+  // Check if the game is over due to bankruptcy
+  if (game.status === 'game_over') {
+    return (
+      <GameOver
+        teamName={game.team_name}
+        cityName={game.city_name}
+        year={game.current_year}
+        tier={game.current_tier}
+        reserves={franchise?.reserves || 0}
+        cityPride={city?.team_pride || 0}
+        rosterSize={roster.length}
+      />
+    );
+  }
 
   function formatTier(tier: string) {
     const tiers: Record<string, string> = {
@@ -323,7 +342,12 @@ export default function GameDashboard({
               </TabsContent>
 
               <TabsContent value="roster">
-                <RosterTab roster={roster} gameId={game.id} />
+                <RosterTab
+                  roster={roster}
+                  gameId={game.id}
+                  facilityLevel={franchise?.facility_level ?? 0}
+                  reserves={franchise?.reserves ?? 0}
+                />
               </TabsContent>
 
               <TabsContent value="draft">
@@ -344,6 +368,8 @@ export default function GameDashboard({
                   currentYear={game.current_year}
                   currentTier={game.current_tier}
                   teamName={game.team_name}
+                  reserves={franchise?.reserves}
+                  cityPride={city?.team_pride}
                 />
               </TabsContent>
 

@@ -29,19 +29,41 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 ### Five-Tier Progression System
 - **Low-A** → **High-A** → **Double-A** → **Triple-A** → **MLB**
 - Each tier unlocks larger stadiums, bigger budgets, and tougher competition
-- Promotion requires sustained success: winning records, playoff appearances, and city development
+- Promotion requires: Win% > .550, positive reserves, city pride > 60%
+- Bankruptcy occurs if reserves drop below -$2,000,000
+
+### Two-Tier Roster System
+- **Active Roster (25-Man)**: Your main squad for games
+- **Farm System / Reserves**: Develop prospects for the future
+- Upgrade facilities to expand reserve capacity:
+  - **Basic Dugout** (Level 0): 5 reserve slots
+  - **Minor League Complex** (Level 1): 20 reserve slots ($150K)
+  - **Player Development Lab** (Level 2): 40 reserve slots ($500K)
 
 ### Deep Player Development
 - 20-80 rating scale for all attributes
+- **Gaussian distribution** for realistic talent scarcity (Box-Muller transform)
 - Hidden traits (work ethic, injury proneness, personality) discovered through scouting
 - Annual growth based on coaching quality, playing time, and tier appropriateness
-- The "promotion dilemma": promote too early and stunt development, too late and lose morale
+- Player archetypes: Slugger, Speedster, Contact King, Flamethrower, and more
 
-### 40-Round Annual Draft
+### 40-Round Annual Draft with War Room
 - 800 prospects per draft class with realistic talent distribution
+- **Smart Draft Features**:
+  - Media consensus rankings with realistic variance
+  - Position filters (P, C, IF, OF)
+  - Scouted-only toggle
+  - Sortable columns
+  - Watchlist/favorites with star toggle
 - Three scouting tiers reveal increasingly accurate ratings
 - 19 AI teams with distinct draft philosophies compete for talent
-- Strategic decisions: best available vs. positional need
+
+### Narrative Event Engine
+- Dynamic events based on team performance and city state
+- Event types: Economic, Team, City, and Story events
+- Events with lasting effects on gameplay
+- Toast notifications for real-time event updates
+- Recent events display in dashboard sidebar
 
 ### Dynamic City Visualization
 - 50 buildings that evolve based on team success
@@ -52,7 +74,12 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 - Revenue streams: tickets, concessions, parking, merchandise, sponsorships
 - Expenses: player salaries, coaching staff, stadium maintenance, travel
 - Budget grows with tier progression and city development
-- Bankruptcy risk if reserves go negative
+- Facility upgrades for expanded roster capacity
+
+### Win/Loss Conditions
+- **Promotion**: Meet requirements and level up to the next tier
+- **Bankruptcy (Game Over)**: Reserves below -$2M ends your career
+- Post-game summary with career statistics
 
 ## Tech Stack
 
@@ -63,34 +90,35 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 | **Tailwind CSS** | Utility-first styling |
 | **Supabase** | PostgreSQL database with Row Level Security |
 | **Radix UI** | Accessible component primitives |
+| **Sonner** | Toast notifications |
 
-## Development Roadmap
+## Development Status
 
 - [x] **Phase 1: Core Simulation Engine**
-  - Player development formulas
-  - Season simulation
+  - Player development formulas with Gaussian distribution
+  - Season simulation with batch processing
   - Financial calculations
   - City growth mechanics
 
 - [x] **Phase 2: Core UI**
-  - Landing page with new/load game
-  - Game dashboard with navigation
-  - Roster management interface
-  - 40-round draft system with AI teams
+  - Landing page with new/load/delete game
+  - Game dashboard with tabbed navigation
+  - Two-tier roster management (Active/Reserve)
+  - 40-round draft system with War Room toolbar
 
 - [x] **Phase 3: City Visualization & Game Loop**
-  - Season simulation with batch processing
+  - Season simulation with real-time progress
   - City building grid visualization
   - Financial projections and history
-  - Season records and draft history
+  - Facility upgrades system
 
-- [ ] **Phase 4: Narrative Events & Polish**
-  - Random events (injuries, media moments, city milestones)
-  - Tier promotion ceremonies
-  - Advanced AI decision-making
-  - Coaching hiring/firing
+- [x] **Phase 4: Narrative Events & Progression**
+  - Narrative event engine with effects
+  - Tier promotion system with bonuses
+  - Bankruptcy detection and game over
+  - Toast notifications for events
 
-- [ ] **Phase 5: Launch**
+- [ ] **Phase 5: Polish & Launch**
   - Tutorial and onboarding
   - Achievement system
   - Performance optimization
@@ -134,9 +162,13 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 
 5. **Run database migrations**
 
-   In the Supabase dashboard SQL Editor, run the contents of:
+   In the Supabase dashboard SQL Editor, run the migrations in order:
    ```
    supabase/migrations/001_initial_schema.sql
+   supabase/migrations/002_draft_enhancements.sql
+   supabase/migrations/003_narrative_events.sql
+   supabase/migrations/004_game_progression.sql
+   supabase/migrations/005_roster_tiers.sql
    ```
 
    Or via Supabase CLI:
@@ -161,8 +193,8 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 baseball-gm-simulator/
 ├── src/
 │   ├── app/                          # Next.js App Router
-│   │   ├── page.tsx                  # Landing page (new/load game)
-│   │   ├── layout.tsx                # Root layout
+│   │   ├── page.tsx                  # Landing page (new/load/delete game)
+│   │   ├── layout.tsx                # Root layout with Toaster
 │   │   └── game/
 │   │       └── [gameId]/
 │   │           └── page.tsx          # Main game dashboard
@@ -170,32 +202,36 @@ baseball-gm-simulator/
 │   ├── components/
 │   │   ├── game/
 │   │   │   ├── GameDashboard.tsx     # Main game container
+│   │   │   ├── GameOver.tsx          # Bankruptcy/fired screen
+│   │   │   ├── PromotionModal.tsx    # Tier promotion modal
+│   │   │   ├── FacilitiesUpgrade.tsx # Facility upgrade card
+│   │   │   ├── dashboard/
+│   │   │   │   └── RecentEvents.tsx  # Narrative events display
 │   │   │   └── tabs/
 │   │   │       ├── OverviewTab.tsx   # Game overview & phase actions
-│   │   │       ├── RosterTab.tsx     # Player roster management
-│   │   │       ├── DraftTab.tsx      # 40-round draft interface
+│   │   │       ├── RosterTab.tsx     # Two-tier roster management
+│   │   │       ├── DraftTab.tsx      # Draft with War Room toolbar
+│   │   │       ├── DraftNeeds.tsx    # Roster composition targets
 │   │   │       ├── SeasonTab.tsx     # Season simulation
 │   │   │       ├── CityTab.tsx       # City building visualization
-│   │   │       ├── FinancesTab.tsx   # Revenue & expenses
+│   │   │       ├── FinancesTab.tsx   # Revenue, expenses, facilities
 │   │   │       └── HistoryTab.tsx    # Season records & events
 │   │   │
 │   │   └── ui/                       # Reusable UI components (shadcn/ui)
-│   │       ├── button.tsx
-│   │       ├── card.tsx
-│   │       ├── dialog.tsx
-│   │       ├── table.tsx
-│   │       └── ...
 │   │
 │   └── lib/
 │       ├── actions/
-│       │   └── game.ts               # Server actions (CRUD, simulation)
+│       │   └── game.ts               # Server actions (CRUD, simulation, roster)
 │       │
 │       ├── simulation/               # Core game engine
+│       │   ├── index.ts              # Main exports
 │       │   ├── player-development.ts # Growth formulas
 │       │   ├── season.ts             # Game simulation
 │       │   ├── financial.ts          # Revenue/expense calculations
 │       │   ├── city-growth.ts        # Building upgrades
-│       │   └── draft.ts              # Draft class generation
+│       │   ├── draft.ts              # Draft with Gaussian distribution
+│       │   ├── events.ts             # Narrative event engine
+│       │   └── progression.ts        # Promotion/bankruptcy logic
 │       │
 │       ├── supabase/                 # Database clients
 │       │   ├── client.ts             # Browser client
@@ -203,16 +239,19 @@ baseball-gm-simulator/
 │       │   └── middleware.ts         # Auth middleware
 │       │
 │       ├── types/
-│       │   ├── index.ts              # Game types & constants
+│       │   ├── index.ts              # Game types, facility configs, AI teams
 │       │   └── database.ts           # Supabase schema types
 │       │
 │       └── utils/
-│           ├── format.ts             # Currency, number formatting
-│           └── random.ts             # Seeded random utilities
+│           └── format.ts             # Currency, number formatting
 │
 ├── supabase/
 │   └── migrations/
-│       └── 001_initial_schema.sql    # Database schema
+│       ├── 001_initial_schema.sql    # Core database schema
+│       ├── 002_draft_enhancements.sql # Draft system tables
+│       ├── 003_narrative_events.sql  # Events and effects tables
+│       ├── 004_game_progression.sql  # Promotion history, game status
+│       └── 005_roster_tiers.sql      # Roster status, facilities
 │
 ├── public/                           # Static assets
 ├── .env.local.example                # Environment template
@@ -233,19 +272,27 @@ baseball-gm-simulator/
 | 55-65  | Above Average | Solid starter |
 | 70-80  | Elite | All-Star / MVP caliber |
 
-### Annual Player Growth Formula
+### Gaussian Talent Distribution
 
-```
-Growth = Base Growth × Age Modifier
-       + Coaching Quality (±3)
-       + Playing Time (±1.5)
-       + Tier Appropriateness (±2)
-       + Work Ethic (±2)
-       + Injury Impact (-3)
-       ± Random Variance (20%)
+Player ratings follow a normal distribution (Box-Muller transform):
+- Mean: 50, Standard Deviation: 15
+- Most players cluster around average
+- Elite talents (70+) are rare
+- Creates realistic draft classes with talent scarcity
 
-Clamped to: -5 to +5 per year
-```
+### Two-Tier Roster System
+
+| Roster | Capacity | Purpose |
+|--------|----------|---------|
+| Active | 25 (fixed) | Game-day roster |
+| Reserve | 5-40 (upgradeable) | Development & depth |
+
+**Facility Upgrades:**
+| Level | Name | Reserve Slots | Cost |
+|-------|------|---------------|------|
+| 0 | Basic Dugout | 5 | - |
+| 1 | Minor League Complex | 20 | $150,000 |
+| 2 | Player Development Lab | 40 | $500,000 |
 
 ### Tier Progression
 
@@ -257,6 +304,17 @@ Clamped to: -5 to +5 per year
 | Triple-A | $25M | 18,000 | 144 | 60-80 |
 | MLB | $150M | 42,000 | 162 | 70-85 |
 
+### Promotion Requirements
+
+- Win percentage > 55%
+- Positive reserves (balance > $0)
+- City pride > 60%
+
+### Bankruptcy Threshold
+
+- Reserves below -$2,000,000 triggers game over
+- Debt warnings at -$500K and -$1M
+
 ### Building States
 
 | State | Name | Description |
@@ -266,16 +324,6 @@ Clamped to: -5 to +5 per year
 | 2 | Open | Business is operational |
 | 3 | Expanded | Thriving, expanded operations |
 | 4 | Landmark | Historic status, community icon |
-
-### City Growth Formula
-
-```
-Success Score = (Win% - 0.5) × 100
-              + (Attendance / Capacity) × 30
-              + (Made Playoffs ? 20 : 0)
-
-Buildings to Upgrade = floor(Success Score / 20)
-```
 
 ## Development
 
@@ -306,14 +354,16 @@ The easiest way to deploy is via [Vercel](https://vercel.com):
 
 | File | Description |
 |------|-------------|
-| `src/lib/types/index.ts` | All TypeScript types, tier configs, AI teams |
+| `src/lib/types/index.ts` | All TypeScript types, facility configs, AI teams |
 | `src/lib/types/database.ts` | Supabase database schema types |
 | `src/lib/actions/game.ts` | Server actions for all game operations |
 | `src/lib/simulation/player-development.ts` | Player growth calculations |
 | `src/lib/simulation/season.ts` | Season simulation engine |
 | `src/lib/simulation/financial.ts` | Financial calculations |
 | `src/lib/simulation/city-growth.ts` | City evolution system |
-| `src/lib/simulation/draft.ts` | Draft and scouting system |
+| `src/lib/simulation/draft.ts` | Draft with Gaussian distribution |
+| `src/lib/simulation/events.ts` | Narrative event engine |
+| `src/lib/simulation/progression.ts` | Promotion and bankruptcy logic |
 
 ## Contributing
 
