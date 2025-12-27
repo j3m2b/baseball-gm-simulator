@@ -4,7 +4,8 @@ import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { generateInitialCity } from '@/lib/simulation/city-growth';
 import { generateDraftClass } from '@/lib/simulation/draft';
-import { TIER_CONFIGS, AI_TEAMS, type DifficultyMode } from '@/lib/types';
+import { checkForEventsWithTier, serializeEvent, applyEventEffects, type GameState as EventGameState, type NarrativeEvent } from '@/lib/simulation/events';
+import { TIER_CONFIGS, AI_TEAMS, type DifficultyMode, type Tier } from '@/lib/types';
 import type { Database } from '@/lib/types/database';
 
 type GameRow = Database['public']['Tables']['games']['Row'];
@@ -764,6 +765,8 @@ export async function advancePhase(gameId: string) {
           pitcher_attributes: p.pitcherAttributes,
           hidden_traits: p.hiddenTraits,
           is_drafted: false,
+          media_rank: p.mediaRank,
+          archetype: p.archetype,
         }));
 
         await supabase.from('draft_prospects').insert(batch as any);
@@ -1473,6 +1476,124 @@ export async function completeSeasonSimulation(gameId: string) {
     description: `Final Record: ${wins}-${losses} (${(winPct * 100).toFixed(1)}%). Finished ${leagueRank}${getOrdinalSuffix(leagueRank)} in the league.${madePlayoffs ? ' Made playoffs!' : ''}`,
     is_read: false,
   } as any);
+
+  // ============================================
+  // NARRATIVE EVENT ENGINE
+  // Check for story events based on game state
+  // ============================================
+
+  const eventGameState: EventGameState = {
+    gameId,
+    year: gameData.current_year,
+    tier: gameData.current_tier as Tier,
+    wins,
+    losses,
+    winPercentage: winPct,
+    madePlayoffs,
+    wonDivision: leagueRank === 1,
+    population: cityData.population,
+    unemploymentRate: cityData.unemployment_rate,
+    teamPride: cityData.team_pride,
+    medianIncome: cityData.median_income,
+    stadiumQuality: franchiseData.stadium_quality,
+    reserves: newReserves,
+    totalAttendance: seasonData.total_attendance || 0,
+    stadiumCapacity: franchiseData.stadium_capacity,
+    consecutiveWinningSeasons: winPct > 0.5 ? (franchiseData.consecutive_winning_seasons || 0) + 1 : 0,
+    consecutiveDivisionTitles: leagueRank === 1 ? (franchiseData.consecutive_division_titles || 0) + 1 : 0,
+  };
+
+  const narrativeEvents = checkForEventsWithTier(eventGameState);
+
+  // Insert narrative events into database
+  const insertedEventIds: string[] = [];
+  for (const event of narrativeEvents) {
+    const serialized = serializeEvent(event);
+    const expiresYear = event.durationYears ? gameData.current_year + event.durationYears : null;
+
+    const { data: insertedEvent } = await supabase.from('game_events').insert({
+      game_id: gameId,
+      year: gameData.current_year,
+      type: serialized.type,
+      title: serialized.title,
+      description: serialized.description,
+      effects: serialized.effects,
+      duration_years: serialized.duration_years,
+      expires_year: expiresYear,
+      is_read: false,
+    } as any).select('id').single();
+
+    if (insertedEvent) {
+      insertedEventIds.push((insertedEvent as { id: string }).id);
+
+      // Create active effects for events with duration
+      if (event.durationYears && event.durationYears > 0) {
+        const effects = event.effects;
+        const effectEntries: Array<{ effect_type: string; modifier: number }> = [];
+
+        if (effects.attendanceModifier) {
+          effectEntries.push({ effect_type: 'attendance_modifier', modifier: effects.attendanceModifier });
+        }
+        if (effects.revenueModifier) {
+          effectEntries.push({ effect_type: 'revenue_modifier', modifier: effects.revenueModifier });
+        }
+        if (effects.merchandiseModifier) {
+          effectEntries.push({ effect_type: 'merchandise_modifier', modifier: effects.merchandiseModifier });
+        }
+
+        for (const entry of effectEntries) {
+          await supabase.from('active_effects').insert({
+            game_id: gameId,
+            event_id: (insertedEvent as { id: string }).id,
+            effect_type: entry.effect_type,
+            modifier: entry.modifier,
+            start_year: gameData.current_year,
+            end_year: expiresYear,
+            is_active: true,
+          } as any);
+        }
+      }
+    }
+  }
+
+  // Apply immediate event effects to city/franchise (one-time changes)
+  if (narrativeEvents.length > 0) {
+    const eventEffects = applyEventEffects(eventGameState, narrativeEvents);
+
+    // Update city with event effects (if they differ from what we already calculated)
+    if (eventEffects.newPride !== cityGrowth.newPride || eventEffects.newPopulation !== cityGrowth.population) {
+      await supabase
+        .from('city_states')
+        // @ts-expect-error - Supabase types not inferred without database connection
+        .update({
+          team_pride: eventEffects.newPride,
+          population: eventEffects.newPopulation,
+        })
+        .eq('game_id', gameId);
+    }
+
+    // Update stadium quality if events affected it
+    if (eventEffects.newStadiumQuality !== franchiseData.stadium_quality) {
+      await supabase
+        .from('current_franchise')
+        // @ts-expect-error - Supabase types not inferred without database connection
+        .update({
+          stadium_quality: eventEffects.newStadiumQuality,
+          reserves: newReserves - eventEffects.totalMaintenanceCost,
+        })
+        .eq('game_id', gameId);
+    }
+  }
+
+  // Update franchise consecutive season tracking
+  await supabase
+    .from('current_franchise')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      consecutive_winning_seasons: winPct > 0.5 ? (franchiseData.consecutive_winning_seasons || 0) + 1 : 0,
+      consecutive_division_titles: leagueRank === 1 ? (franchiseData.consecutive_division_titles || 0) + 1 : 0,
+    })
+    .eq('game_id', gameId);
 
   // Advance to post_season or off_season
   const nextPhase = madePlayoffs ? 'post_season' : 'off_season';

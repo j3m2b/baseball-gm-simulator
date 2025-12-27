@@ -13,6 +13,7 @@ import SeasonTab from './tabs/SeasonTab';
 import CityTab from './tabs/CityTab';
 import FinancesTab from './tabs/FinancesTab';
 import HistoryTab from './tabs/HistoryTab';
+import RecentEvents from './dashboard/RecentEvents';
 import { formatCurrency } from '@/lib/utils/format';
 
 interface GameDashboardProps {
@@ -79,6 +80,8 @@ interface GameDashboardProps {
     scouted_rating: number | null;
     scouted_potential: number | null;
     scouting_accuracy: string | null;
+    media_rank: number;
+    archetype: string;
   }>;
   events: Array<{
     id: string;
@@ -87,6 +90,8 @@ interface GameDashboardProps {
     title: string;
     description: string;
     is_read: boolean;
+    effects?: unknown;
+    duration_years?: number | null;
   }>;
 }
 
@@ -262,21 +267,7 @@ export default function GameDashboard({
               )}
 
               {/* Recent Events */}
-              {events.length > 0 && (
-                <Card className="bg-gray-900 border-gray-800">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-gray-400">Recent Events</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    {events.slice(0, 3).map((event) => (
-                      <div key={event.id} className="text-sm">
-                        <div className="font-medium text-white">{event.title}</div>
-                        <div className="text-xs text-gray-500">Year {event.year}</div>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-              )}
+              <RecentEvents events={events} maxEvents={3} compact />
             </div>
           </aside>
 
@@ -342,6 +333,7 @@ export default function GameDashboard({
                     draftState={draftState}
                     prospects={prospects}
                     reserves={franchise?.reserves || 0}
+                    roster={roster}
                   />
                 )}
               </TabsContent>

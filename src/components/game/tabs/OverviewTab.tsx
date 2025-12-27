@@ -7,6 +7,7 @@ import { advancePhase } from '@/lib/actions/game';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { formatCurrency } from '@/lib/utils/format';
+import RecentEvents from '../dashboard/RecentEvents';
 
 interface OverviewTabProps {
   game: {
@@ -46,6 +47,9 @@ interface OverviewTabProps {
     type: string;
     title: string;
     description: string;
+    is_read: boolean;
+    effects?: unknown;
+    duration_years?: number | null;
   }>;
 }
 
@@ -97,16 +101,17 @@ export default function OverviewTab({ game, franchise, city, roster, events }: O
   const pitchers = roster.filter(p => p.position === 'SP' || p.position === 'RP').length;
   const hitters = roster.length - pitchers;
 
+  // Filter events for current year (narrative events)
+  const currentYearEvents = events.filter(e =>
+    e.year === game.current_year &&
+    ['economic', 'team', 'city', 'story'].includes(e.type)
+  );
+
   return (
     <div className="space-y-6">
-      {/* Welcome Event Banner */}
-      {events.length > 0 && events[0].year === game.current_year && (
-        <Card className="bg-gradient-to-r from-amber-900/30 to-amber-800/10 border-amber-800">
-          <CardContent className="py-4">
-            <h3 className="font-semibold text-amber-500">{events[0].title}</h3>
-            <p className="text-sm text-gray-300 mt-1">{events[0].description}</p>
-          </CardContent>
-        </Card>
+      {/* Narrative Events for Current Year */}
+      {currentYearEvents.length > 0 && (
+        <RecentEvents events={currentYearEvents} maxEvents={3} />
       )}
 
       {/* Quick Stats Grid */}

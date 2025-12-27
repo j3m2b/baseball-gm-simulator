@@ -14,6 +14,7 @@ import type {
   HiddenTraits,
   AITeam,
   ScoutingTier,
+  Archetype,
   SCOUTING_CONFIG,
   PROSPECT_DISTRIBUTION,
 } from '@/lib/types';
@@ -88,11 +89,56 @@ function generatePlayerName(): { firstName: string; lastName: string } {
 }
 
 // ============================================
+// GAUSSIAN DISTRIBUTION (Box-Muller Transform)
+// ============================================
+
+/**
+ * Generate a random number from a normal (Gaussian) distribution
+ * using the Box-Muller transform.
+ *
+ * This creates a bell curve where:
+ * - ~68% of values fall within 1 standard deviation of the mean
+ * - ~95% of values fall within 2 standard deviations
+ * - ~99.7% of values fall within 3 standard deviations
+ *
+ * For ratings with mean=50, stdDev=15:
+ * - Rating 50 (average) is most common
+ * - Rating 65 (~1 std dev) is top ~16%
+ * - Rating 80 (~2 std dev) is top ~2.5% (elite/star)
+ * - Rating 20 (~2 std dev below) is bottom ~2.5%
+ */
+function randomNormal(mean: number, stdDev: number): number {
+  // Box-Muller transform: generates two independent standard normal values
+  // We only use one of them for simplicity
+  let u1 = Math.random();
+  let u2 = Math.random();
+
+  // Avoid log(0)
+  while (u1 === 0) u1 = Math.random();
+
+  // Standard normal (mean=0, stdDev=1)
+  const z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+
+  // Scale to desired mean and standard deviation
+  return mean + z0 * stdDev;
+}
+
+/**
+ * Generate a rating using Gaussian distribution, clamped to valid range
+ */
+function randomGaussianRating(mean: number = 50, stdDev: number = 15): number {
+  const value = randomNormal(mean, stdDev);
+  // Clamp to 20-80 range (the baseball scouting scale)
+  return Math.round(Math.max(20, Math.min(80, value)));
+}
+
+// ============================================
 // ATTRIBUTE GENERATION
 // ============================================
 
 /**
- * Generate random rating within a range
+ * Generate random rating within a range (uniform distribution)
+ * Used for attribute variance, not main rating generation
  */
 function randomRating(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -165,12 +211,175 @@ export function generateHiddenTraits(): HiddenTraits {
   };
 }
 
+// ============================================
+// ARCHETYPE DETERMINATION
+// ============================================
+
 /**
- * Generate complete prospect attributes
+ * Determine player archetype based on their attributes
+ * Returns a descriptive archetype that gives insight without revealing exact ratings
  */
-export function generateProspectAttributes(
-  tier: 'elite' | 'good' | 'average' | 'longshot'
-): {
+export function determineArchetype(
+  playerType: PlayerType,
+  hitterAttributes: HitterAttributes | null,
+  pitcherAttributes: PitcherAttributes | null,
+  potential: number,
+  currentRating: number
+): Archetype {
+  // If potential is much higher than current, they're "Raw Talent"
+  if (potential - currentRating >= 15) {
+    return 'Raw Talent';
+  }
+
+  if (playerType === 'HITTER' && hitterAttributes) {
+    const { hit, power, speed, arm, field } = hitterAttributes;
+    const attrs = [
+      { name: 'power', value: power },
+      { name: 'speed', value: speed },
+      { name: 'hit', value: hit },
+      { name: 'field', value: field },
+      { name: 'arm', value: arm },
+    ];
+
+    // Sort to find dominant attribute
+    attrs.sort((a, b) => b.value - a.value);
+    const dominant = attrs[0];
+    const second = attrs[1];
+
+    // Check if they're balanced (top 2 within 5 points of each other)
+    const range = attrs[0].value - attrs[4].value;
+    if (range <= 12) {
+      return 'Playmaker';
+    }
+
+    // Dominant attribute determines archetype
+    if (dominant.name === 'power' && dominant.value >= 55) {
+      return 'Slugger';
+    }
+    if (dominant.name === 'speed' && dominant.value >= 55) {
+      return 'Speedster';
+    }
+    if (dominant.name === 'hit' && dominant.value >= 55) {
+      return 'Contact King';
+    }
+    if (dominant.name === 'field' && dominant.value >= 55) {
+      return 'Glove Wizard';
+    }
+    if (dominant.name === 'arm' && dominant.value >= 55) {
+      return 'Cannon Arm';
+    }
+
+    // Fallback based on highest stat name
+    if (dominant.name === 'power') return 'Slugger';
+    if (dominant.name === 'speed') return 'Speedster';
+    if (dominant.name === 'hit') return 'Contact King';
+    if (dominant.name === 'field') return 'Glove Wizard';
+    if (dominant.name === 'arm') return 'Cannon Arm';
+
+    return 'Playmaker';
+  }
+
+  if (playerType === 'PITCHER' && pitcherAttributes) {
+    const { stuff, control, movement } = pitcherAttributes;
+    const attrs = [
+      { name: 'stuff', value: stuff },
+      { name: 'control', value: control },
+      { name: 'movement', value: movement },
+    ];
+
+    attrs.sort((a, b) => b.value - a.value);
+    const dominant = attrs[0];
+
+    // Check if balanced
+    const range = attrs[0].value - attrs[2].value;
+    if (range <= 8) {
+      return 'Playmaker';
+    }
+
+    if (dominant.name === 'stuff' && dominant.value >= 55) {
+      return 'Flamethrower';
+    }
+    if (dominant.name === 'control' && dominant.value >= 55) {
+      return 'Command Ace';
+    }
+    if (dominant.name === 'movement' && dominant.value >= 55) {
+      return 'Movement Master';
+    }
+
+    // Fallback
+    if (dominant.name === 'stuff') return 'Flamethrower';
+    if (dominant.name === 'control') return 'Command Ace';
+    if (dominant.name === 'movement') return 'Movement Master';
+
+    return 'Playmaker';
+  }
+
+  return 'Playmaker';
+}
+
+// ============================================
+// MEDIA RANK CALCULATION
+// ============================================
+
+/**
+ * Calculate media consensus rank (1-800) for a prospect
+ * Based primarily on potential with noise to simulate imperfect media scouting
+ */
+export function calculateMediaRank(
+  potential: number,
+  currentRating: number,
+  age: number,
+  allProspects: Array<{ potential: number; currentRating: number; age: number; noise?: number }>
+): number {
+  // Add noise to potential for media ranking
+  // Noise is higher for younger players (more unknown)
+  const ageNoiseFactor = Math.max(0, 22 - age) * 2; // 0-8 extra noise for age
+  const baseNoise = (Math.random() * 16) - 8; // ±8 base noise
+  const totalNoise = baseNoise + ((Math.random() * ageNoiseFactor) - ageNoiseFactor / 2);
+
+  // Media "perceived" value: weighted toward potential but considers current
+  const mediaScore = (potential * 0.75) + (currentRating * 0.25) + totalNoise;
+
+  // Sort all prospects by their media score to get rank
+  const scoresWithIndex = allProspects.map((p, idx) => {
+    const pAgeNoise = Math.max(0, 22 - p.age) * 2;
+    const pNoise = p.noise ?? ((Math.random() * 16) - 8 + ((Math.random() * pAgeNoise) - pAgeNoise / 2));
+    return {
+      score: (p.potential * 0.75) + (p.currentRating * 0.25) + pNoise,
+      idx,
+    };
+  });
+
+  scoresWithIndex.sort((a, b) => b.score - a.score);
+
+  // Find this prospect's rank (1-based)
+  const thisScore = mediaScore;
+  let rank = 1;
+  for (const item of scoresWithIndex) {
+    if (Math.abs(item.score - thisScore) < 0.001) {
+      break;
+    }
+    rank++;
+  }
+
+  return Math.min(800, Math.max(1, rank));
+}
+
+/**
+ * Generate complete prospect attributes using Gaussian distribution
+ *
+ * Uses Box-Muller transform to create realistic talent distribution:
+ * - Mean potential: 50 (average player)
+ * - Standard deviation: 15
+ * - This means:
+ *   - ~68% have potential between 35-65 (average to good)
+ *   - ~95% have potential between 20-80 (almost all players)
+ *   - ~2.5% have potential 65+ (true stars, top prospects)
+ *   - ~0.1% have potential 75+ (generational talents)
+ *
+ * Current rating is derived from potential with a gap (room to grow)
+ */
+export function generateProspectAttributes(): {
   currentRating: number;
   potential: number;
   hitterAttributes: HitterAttributes | null;
@@ -180,18 +389,14 @@ export function generateProspectAttributes(
   playerType: PlayerType;
   age: number;
 } {
-  const distribution = {
-    elite: { potentialRange: { min: 65, max: 75 }, currentRange: { min: 50, max: 65 } },
-    good: { potentialRange: { min: 55, max: 65 }, currentRange: { min: 45, max: 55 } },
-    average: { potentialRange: { min: 45, max: 55 }, currentRange: { min: 40, max: 50 } },
-    longshot: { potentialRange: { min: 35, max: 45 }, currentRange: { min: 30, max: 40 } },
-  }[tier];
+  // Generate potential using Gaussian distribution
+  // Mean=50, StdDev=15 creates realistic talent scarcity
+  const potential = randomGaussianRating(50, 15);
 
-  const potential = randomRating(distribution.potentialRange.min, distribution.potentialRange.max);
-  const currentRating = randomRating(
-    Math.max(distribution.currentRange.min, potential - 20),
-    Math.min(distribution.currentRange.max, potential - 5)
-  );
+  // Current rating is below potential (players have room to develop)
+  // Gap ranges from 5-20 points, with younger players having bigger gaps
+  const developmentGap = randomRating(5, 20);
+  const currentRating = Math.max(20, Math.min(80, potential - developmentGap));
 
   // Select position with weighted random
   const positionRoll = Math.random();
@@ -207,9 +412,10 @@ export function generateProspectAttributes(
 
   const playerType: PlayerType = (position === 'SP' || position === 'RP') ? 'PITCHER' : 'HITTER';
 
-  // Generate attributes
-  const hitterAttributes = playerType === 'HITTER' ? generateHitterAttributes(currentRating) : null;
-  const pitcherAttributes = playerType === 'PITCHER' ? generatePitcherAttributes(currentRating) : null;
+  // Generate attributes using Gaussian distribution for each attribute
+  // This creates players with varied strengths (some tools better than others)
+  const hitterAttributes = playerType === 'HITTER' ? generateHitterAttributesGaussian(currentRating) : null;
+  const pitcherAttributes = playerType === 'PITCHER' ? generatePitcherAttributesGaussian(currentRating) : null;
   const hiddenTraits = generateHiddenTraits();
 
   // Select age with weighted random
@@ -236,6 +442,43 @@ export function generateProspectAttributes(
   };
 }
 
+/**
+ * Generate hitter attributes using Gaussian distribution around overall rating
+ * Creates more varied tool profiles (five-tool players are rare)
+ */
+function generateHitterAttributesGaussian(overallRating: number): HitterAttributes {
+  // Each tool varies around the overall with stdDev of 8
+  // This creates distinct player profiles (sluggers, speedsters, etc.)
+  const generateTool = () => {
+    const value = randomNormal(overallRating, 8);
+    return Math.round(Math.max(20, Math.min(80, value)));
+  };
+
+  return {
+    hit: generateTool(),
+    power: generateTool(),
+    speed: generateTool(),
+    arm: generateTool(),
+    field: generateTool(),
+  };
+}
+
+/**
+ * Generate pitcher attributes using Gaussian distribution
+ */
+function generatePitcherAttributesGaussian(overallRating: number): PitcherAttributes {
+  const generateTool = () => {
+    const value = randomNormal(overallRating, 8);
+    return Math.round(Math.max(20, Math.min(80, value)));
+  };
+
+  return {
+    stuff: generateTool(),
+    control: generateTool(),
+    movement: generateTool(),
+  };
+}
+
 // ============================================
 // DRAFT CLASS GENERATION
 // ============================================
@@ -247,50 +490,110 @@ export interface DraftClassConfig {
 }
 
 /**
- * Generate a complete draft class of prospects
+ * Generate a complete draft class of prospects using Gaussian distribution
+ *
+ * The Gaussian distribution naturally creates talent scarcity:
+ * - Most players cluster around average (potential ~50)
+ * - Elite prospects (potential 70+) are statistically rare (~2.5%)
+ * - Generational talents (potential 75+) are extremely rare (~0.5%)
+ *
+ * Media ranks are calculated AFTER all prospects are generated,
+ * ensuring a proper spread from #1 to #800.
  */
 export function generateDraftClass(config: DraftClassConfig): Omit<DraftProspect, 'prospectId'>[] {
-  const { totalPlayers = DRAFT_CONFIG.TOTAL_PLAYERS, gameId, draftYear } = config;
+  const { totalPlayers = DRAFT_CONFIG.TOTAL_PLAYERS } = config;
 
-  const prospects: Omit<DraftProspect, 'prospectId'>[] = [];
+  // First pass: generate all prospects without media rank
+  const rawProspects: Array<{
+    firstName: string;
+    lastName: string;
+    age: number;
+    position: Position;
+    playerType: PlayerType;
+    currentRating: number;
+    potential: number;
+    hitterAttributes: HitterAttributes | null;
+    pitcherAttributes: PitcherAttributes | null;
+    hiddenTraits: HiddenTraits;
+    archetype: Archetype;
+    noise: number;  // Store noise for consistent media rank calculation
+  }> = [];
 
-  // Calculate distribution counts
-  const distribution = {
-    elite: Math.floor(totalPlayers * 0.06),
-    good: Math.floor(totalPlayers * 0.19),
-    average: Math.floor(totalPlayers * 0.37),
-    longshot: totalPlayers - Math.floor(totalPlayers * 0.06) -
-              Math.floor(totalPlayers * 0.19) - Math.floor(totalPlayers * 0.37),
-  };
+  // Generate all prospects using Gaussian distribution
+  // No more tier-based generation - the bell curve naturally creates
+  // the right distribution of elite/good/average/longshot players
+  for (let i = 0; i < totalPlayers; i++) {
+    const { firstName, lastName } = generatePlayerName();
+    const attributes = generateProspectAttributes();
 
-  // Generate prospects by tier
-  for (const [tier, count] of Object.entries(distribution)) {
-    for (let i = 0; i < count; i++) {
-      const { firstName, lastName } = generatePlayerName();
-      const attributes = generateProspectAttributes(tier as keyof typeof distribution);
+    // Determine archetype based on attributes
+    const archetype = determineArchetype(
+      attributes.playerType,
+      attributes.hitterAttributes,
+      attributes.pitcherAttributes,
+      attributes.potential,
+      attributes.currentRating
+    );
 
-      prospects.push({
-        firstName,
-        lastName,
-        age: attributes.age,
-        position: attributes.position,
-        playerType: attributes.playerType,
-        currentRating: attributes.currentRating,
-        potential: attributes.potential,
-        hitterAttributes: attributes.hitterAttributes,
-        pitcherAttributes: attributes.pitcherAttributes,
-        hiddenTraits: attributes.hiddenTraits,
-        traitsRevealed: false,
-        scoutedRating: null,
-        scoutedPotential: null,
-        scoutingAccuracy: null,
-        isDrafted: false,
-        draftedByTeam: null,
-      });
-    }
+    // Pre-calculate noise for consistent media ranking
+    // Younger players have more noise (more unknown quantity)
+    const ageNoiseFactor = Math.max(0, 22 - attributes.age) * 2;
+    const noise = (Math.random() * 16) - 8 + ((Math.random() * ageNoiseFactor) - ageNoiseFactor / 2);
+
+    rawProspects.push({
+      firstName,
+      lastName,
+      age: attributes.age,
+      position: attributes.position,
+      playerType: attributes.playerType,
+      currentRating: attributes.currentRating,
+      potential: attributes.potential,
+      hitterAttributes: attributes.hitterAttributes,
+      pitcherAttributes: attributes.pitcherAttributes,
+      hiddenTraits: attributes.hiddenTraits,
+      archetype,
+      noise,
+    });
   }
 
-  // Shuffle to randomize order
+  // Calculate media scores for all prospects
+  const mediaScores = rawProspects.map((p, idx) => ({
+    score: (p.potential * 0.75) + (p.currentRating * 0.25) + p.noise,
+    idx,
+  }));
+
+  // Sort by score to get rankings
+  mediaScores.sort((a, b) => b.score - a.score);
+
+  // Create rank lookup
+  const rankLookup = new Map<number, number>();
+  mediaScores.forEach((item, rank) => {
+    rankLookup.set(item.idx, rank + 1);
+  });
+
+  // Build final prospects array with media ranks
+  const prospects: Omit<DraftProspect, 'prospectId'>[] = rawProspects.map((p, idx) => ({
+    firstName: p.firstName,
+    lastName: p.lastName,
+    age: p.age,
+    position: p.position,
+    playerType: p.playerType,
+    currentRating: p.currentRating,
+    potential: p.potential,
+    hitterAttributes: p.hitterAttributes,
+    pitcherAttributes: p.pitcherAttributes,
+    hiddenTraits: p.hiddenTraits,
+    traitsRevealed: false,
+    scoutedRating: null,
+    scoutedPotential: null,
+    scoutingAccuracy: null,
+    isDrafted: false,
+    draftedByTeam: null,
+    archetype: p.archetype,
+    mediaRank: rankLookup.get(idx) ?? 800,
+  }));
+
+  // Shuffle to randomize display order (but media rank is preserved)
   for (let i = prospects.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [prospects[i], prospects[j]] = [prospects[j], prospects[i]];

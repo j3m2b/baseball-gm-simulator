@@ -10,9 +10,11 @@ import {
   simulateSeasonBatch,
   completeSeasonSimulation,
   getSeasonState,
+  getRecentEvents,
 } from '@/lib/actions/game';
 import { formatCurrency } from '@/lib/utils/format';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 
 interface SeasonTabProps {
   gameId: string;
@@ -154,6 +156,24 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName }
 
       if ('results' in result && result.results) {
         setResults(result.results);
+
+        // Fetch and display toast notifications for narrative events
+        const events = await getRecentEvents(gameId, 10);
+        const narrativeEvents = events.filter(e =>
+          e.year === currentYear &&
+          ['economic', 'team', 'city', 'story'].includes(e.type)
+        );
+
+        // Show toast for each narrative event
+        for (const event of narrativeEvents) {
+          const toastStyle = getEventToastStyle(event.type);
+          toast(event.title, {
+            description: event.description,
+            icon: toastStyle.icon,
+            duration: 5000,
+          });
+        }
+
         router.refresh();
       }
     } catch (err) {
@@ -161,6 +181,17 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName }
     } finally {
       setIsSimulating(false);
     }
+  }
+
+  // Get toast styling based on event type
+  function getEventToastStyle(type: string): { icon: string } {
+    const styles: Record<string, { icon: string }> = {
+      economic: { icon: '📉' },
+      team: { icon: '⚾' },
+      city: { icon: '🏟️' },
+      story: { icon: '📰' },
+    };
+    return styles[type] || { icon: '📋' };
   }
 
   function formatTier(tier: string) {

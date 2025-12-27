@@ -30,6 +30,7 @@ import {
 } from '@/lib/actions/game';
 import { formatCurrency } from '@/lib/utils/format';
 import { AI_TEAMS } from '@/lib/types';
+import DraftNeeds from './DraftNeeds';
 
 interface Prospect {
   id: string;
@@ -43,6 +44,8 @@ interface Prospect {
   scouted_rating: number | null;
   scouted_potential: number | null;
   scouting_accuracy: string | null;
+  media_rank: number;
+  archetype: string;
 }
 
 interface DraftState {
@@ -65,16 +68,35 @@ interface DraftPick {
   rating: number;
 }
 
+interface RosterPlayer {
+  id: string;
+  position: string;
+}
+
 interface DraftTabProps {
   gameId: string;
   draftState: DraftState;
   prospects: Prospect[];
   reserves: number;
+  roster: RosterPlayer[];
 }
+
+type SortField = 'media_rank' | 'name' | 'position' | 'age' | 'scouted_rating';
+type SortDirection = 'asc' | 'desc';
+type PositionFilter = 'all' | 'P' | 'C' | 'IF' | 'OF';
 
 const PROSPECTS_PER_PAGE = 20;
 
-export default function DraftTab({ gameId, draftState: initialDraftState, prospects: initialProspects, reserves }: DraftTabProps) {
+// Position groupings for filters
+const POSITION_GROUPS: Record<PositionFilter, string[]> = {
+  all: [],
+  P: ['SP', 'RP'],
+  C: ['C'],
+  IF: ['1B', '2B', '3B', 'SS'],
+  OF: ['LF', 'CF', 'RF'],
+};
+
+export default function DraftTab({ gameId, draftState: initialDraftState, prospects: initialProspects, reserves, roster }: DraftTabProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
@@ -85,6 +107,25 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
   const [isSimulating, setIsSimulating] = useState(false);
   const [currentReserves, setCurrentReserves] = useState(reserves);
 
+  // Sorting - default to media rank ascending (best prospects first)
+  const [sortField, setSortField] = useState<SortField>('media_rank');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  // Filtering
+  const [positionFilter, setPositionFilter] = useState<PositionFilter>('all');
+  const [scoutedOnlyFilter, setScoutedOnlyFilter] = useState(false);
+  const [favoritesOnlyFilter, setFavoritesOnlyFilter] = useState(false);
+
+  // Favorites (watchlist) - stored locally
+  const [favorites, setFavorites] = useState<Set<string>>(() => {
+    // Try to load from localStorage on mount
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(`draft-favorites-${gameId}`);
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    }
+    return new Set();
+  });
+
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -92,10 +133,96 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
   const [draftPicks, setDraftPicks] = useState<DraftPick[]>([]);
   const [showDraftBoard, setShowDraftBoard] = useState(false);
 
+  // Save favorites to localStorage when they change
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`draft-favorites-${gameId}`, JSON.stringify([...favorites]));
+    }
+  }, [favorites, gameId]);
+
+  // Toggle favorite status
+  function toggleFavorite(prospectId: string) {
+    setFavorites(prev => {
+      const newFavorites = new Set(prev);
+      if (newFavorites.has(prospectId)) {
+        newFavorites.delete(prospectId);
+      } else {
+        newFavorites.add(prospectId);
+      }
+      return newFavorites;
+    });
+  }
+
+  // Filter prospects
+  const filteredProspects = prospects.filter(prospect => {
+    // Position filter
+    if (positionFilter !== 'all') {
+      const positions = POSITION_GROUPS[positionFilter];
+      if (!positions.includes(prospect.position)) {
+        return false;
+      }
+    }
+
+    // Scouted only filter
+    if (scoutedOnlyFilter && !prospect.scouting_accuracy) {
+      return false;
+    }
+
+    // Favorites only filter
+    if (favoritesOnlyFilter && !favorites.has(prospect.id)) {
+      return false;
+    }
+
+    return true;
+  });
+
+  // Sort prospects
+  const sortedProspects = [...filteredProspects].sort((a, b) => {
+    let comparison = 0;
+    switch (sortField) {
+      case 'media_rank':
+        comparison = (a.media_rank ?? 800) - (b.media_rank ?? 800);
+        break;
+      case 'name':
+        comparison = `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`);
+        break;
+      case 'position':
+        comparison = a.position.localeCompare(b.position);
+        break;
+      case 'age':
+        comparison = a.age - b.age;
+        break;
+      case 'scouted_rating':
+        // Put scouted players first, then sort by rating
+        const aRating = a.scouted_rating ?? -1;
+        const bRating = b.scouted_rating ?? -1;
+        comparison = bRating - aRating; // Higher ratings first
+        break;
+    }
+    return sortDirection === 'asc' ? comparison : -comparison;
+  });
+
   // Calculate pagination
-  const totalPages = Math.ceil(prospects.length / PROSPECTS_PER_PAGE);
+  const totalPages = Math.ceil(sortedProspects.length / PROSPECTS_PER_PAGE);
   const startIndex = (currentPage - 1) * PROSPECTS_PER_PAGE;
-  const visibleProspects = prospects.slice(startIndex, startIndex + PROSPECTS_PER_PAGE);
+  const visibleProspects = sortedProspects.slice(startIndex, startIndex + PROSPECTS_PER_PAGE);
+
+  // Handle sort toggle
+  function handleSort(field: SortField) {
+    if (sortField === field) {
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection(field === 'media_rank' ? 'asc' : 'desc');
+    }
+    setCurrentPage(1); // Reset to first page on sort change
+  }
+
+  // Get sort indicator
+  function getSortIndicator(field: SortField) {
+    if (sortField !== field) return null;
+    return sortDirection === 'asc' ? ' ↑' : ' ↓';
+  }
 
   // Check if it's player's turn
   const getPickPositionInRound = useCallback((pickNum: number, roundNum: number): number => {
@@ -308,6 +435,27 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
     );
   }
 
+  function getArchetypeBadge(archetype: string) {
+    // Archetype colors based on type
+    const colors: Record<string, string> = {
+      'Slugger': 'bg-red-900/50 text-red-400 border-red-800',
+      'Speedster': 'bg-cyan-900/50 text-cyan-400 border-cyan-800',
+      'Contact King': 'bg-yellow-900/50 text-yellow-400 border-yellow-800',
+      'Glove Wizard': 'bg-purple-900/50 text-purple-400 border-purple-800',
+      'Cannon Arm': 'bg-orange-900/50 text-orange-400 border-orange-800',
+      'Flamethrower': 'bg-red-900/50 text-red-400 border-red-800',
+      'Command Ace': 'bg-blue-900/50 text-blue-400 border-blue-800',
+      'Movement Master': 'bg-green-900/50 text-green-400 border-green-800',
+      'Playmaker': 'bg-gray-800 text-gray-300 border-gray-700',
+      'Raw Talent': 'bg-amber-900/50 text-amber-400 border-amber-700',
+    };
+    return (
+      <Badge variant="outline" className={`text-xs ${colors[archetype] || 'bg-gray-800 text-gray-300'}`}>
+        {archetype}
+      </Badge>
+    );
+  }
+
   function getTeamDisplayName(teamId: string) {
     if (teamId === 'player') return 'You';
     const team = AI_TEAMS.find(t => t.id === teamId);
@@ -391,23 +539,34 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
         </CardContent>
       </Card>
 
-      {/* Tab Toggle for Prospects vs Draft Board */}
-      <div className="flex gap-2">
-        <Button
-          variant={!showDraftBoard ? 'default' : 'outline'}
-          onClick={() => setShowDraftBoard(false)}
-          className={!showDraftBoard ? 'bg-amber-600 hover:bg-amber-500' : ''}
-        >
-          Available Prospects ({prospects.length})
-        </Button>
-        <Button
-          variant={showDraftBoard ? 'default' : 'outline'}
-          onClick={() => { setShowDraftBoard(true); fetchDraftPicks(); }}
-          className={showDraftBoard ? 'bg-amber-600 hover:bg-amber-500' : ''}
-        >
-          Draft Board ({draftPicks.length} picks)
-        </Button>
-      </div>
+      {/* Main Content Area with Sidebar */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Roster Needs Sidebar */}
+        <div className="hidden lg:block lg:col-span-1">
+          <div className="sticky top-24">
+            <DraftNeeds roster={roster} />
+          </div>
+        </div>
+
+        {/* Main Draft Content */}
+        <div className="lg:col-span-3">
+          {/* Tab Toggle for Prospects vs Draft Board */}
+          <div className="flex gap-2 mb-6">
+            <Button
+              variant={!showDraftBoard ? 'default' : 'outline'}
+              onClick={() => setShowDraftBoard(false)}
+              className={!showDraftBoard ? 'bg-amber-600 hover:bg-amber-500' : ''}
+            >
+              Available Prospects ({prospects.length})
+            </Button>
+            <Button
+              variant={showDraftBoard ? 'default' : 'outline'}
+              onClick={() => { setShowDraftBoard(true); fetchDraftPicks(); }}
+              className={showDraftBoard ? 'bg-amber-600 hover:bg-amber-500' : ''}
+            >
+              Draft Board ({draftPicks.length} picks)
+            </Button>
+          </div>
 
       {/* Draft Board View */}
       {showDraftBoard && (
@@ -469,12 +628,12 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
       {/* Prospects Table */}
       {!showDraftBoard && (
         <Card className="bg-gray-900 border-gray-800">
-          <CardHeader>
+          <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-lg flex items-center gap-2">
                 Available Prospects
                 <Badge variant="outline" className="text-gray-400">
-                  {prospects.length} remaining
+                  {sortedProspects.length} / {prospects.length}
                 </Badge>
               </CardTitle>
               <Button
@@ -486,63 +645,185 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
                 Refresh
               </Button>
             </div>
+
+            {/* War Room Toolbar */}
+            <div className="mt-4 space-y-3">
+              {/* Position Filters */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-gray-500 uppercase tracking-wide mr-2">Position:</span>
+                {(['all', 'P', 'C', 'IF', 'OF'] as PositionFilter[]).map((filter) => (
+                  <Button
+                    key={filter}
+                    size="sm"
+                    variant={positionFilter === filter ? 'default' : 'outline'}
+                    onClick={() => { setPositionFilter(filter); setCurrentPage(1); }}
+                    className={`h-7 px-3 ${positionFilter === filter ? 'bg-amber-600 hover:bg-amber-500' : 'border-gray-700'}`}
+                  >
+                    {filter === 'all' ? 'All' : filter}
+                  </Button>
+                ))}
+
+                <div className="w-px h-6 bg-gray-700 mx-2" />
+
+                {/* Scouted Only Toggle */}
+                <Button
+                  size="sm"
+                  variant={scoutedOnlyFilter ? 'default' : 'outline'}
+                  onClick={() => { setScoutedOnlyFilter(!scoutedOnlyFilter); setCurrentPage(1); }}
+                  className={`h-7 px-3 ${scoutedOnlyFilter ? 'bg-green-600 hover:bg-green-500' : 'border-gray-700'}`}
+                >
+                  <svg className="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  Scouted
+                </Button>
+
+                {/* Favorites Toggle */}
+                <Button
+                  size="sm"
+                  variant={favoritesOnlyFilter ? 'default' : 'outline'}
+                  onClick={() => { setFavoritesOnlyFilter(!favoritesOnlyFilter); setCurrentPage(1); }}
+                  className={`h-7 px-3 ${favoritesOnlyFilter ? 'bg-yellow-600 hover:bg-yellow-500' : 'border-gray-700'}`}
+                >
+                  <svg className="w-3.5 h-3.5 mr-1.5" fill={favoritesOnlyFilter ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                  </svg>
+                  Watchlist ({favorites.size})
+                </Button>
+
+                {/* Clear Filters */}
+                {(positionFilter !== 'all' || scoutedOnlyFilter || favoritesOnlyFilter) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setPositionFilter('all');
+                      setScoutedOnlyFilter(false);
+                      setFavoritesOnlyFilter(false);
+                      setCurrentPage(1);
+                    }}
+                    className="h-7 px-3 text-gray-400 hover:text-white"
+                  >
+                    <svg className="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow className="border-gray-800 hover:bg-transparent">
-                  <TableHead className="text-gray-400">Name</TableHead>
-                  <TableHead className="text-gray-400">Pos</TableHead>
-                  <TableHead className="text-gray-400">Age</TableHead>
-                  <TableHead className="text-gray-400 text-center">Rating</TableHead>
+                  <TableHead className="text-gray-400 w-8"></TableHead>
+                  <TableHead
+                    className="text-gray-400 cursor-pointer hover:text-white w-16 select-none"
+                    onClick={() => handleSort('media_rank')}
+                  >
+                    Rank{getSortIndicator('media_rank')}
+                  </TableHead>
+                  <TableHead
+                    className="text-gray-400 cursor-pointer hover:text-white select-none"
+                    onClick={() => handleSort('name')}
+                  >
+                    Name{getSortIndicator('name')}
+                  </TableHead>
+                  <TableHead
+                    className="text-gray-400 cursor-pointer hover:text-white select-none"
+                    onClick={() => handleSort('position')}
+                  >
+                    Pos{getSortIndicator('position')}
+                  </TableHead>
+                  <TableHead
+                    className="text-gray-400 cursor-pointer hover:text-white select-none"
+                    onClick={() => handleSort('age')}
+                  >
+                    Age{getSortIndicator('age')}
+                  </TableHead>
+                  <TableHead
+                    className="text-gray-400 text-center cursor-pointer hover:text-white select-none"
+                    onClick={() => handleSort('scouted_rating')}
+                  >
+                    Rating{getSortIndicator('scouted_rating')}
+                  </TableHead>
                   <TableHead className="text-gray-400 text-center">Potential</TableHead>
-                  <TableHead className="text-gray-400">Scouted</TableHead>
+                  <TableHead className="text-gray-400">Type/Scouted</TableHead>
                   <TableHead className="text-gray-400 text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {visibleProspects.map((prospect) => (
-                  <TableRow
-                    key={prospect.id}
-                    className="border-gray-800 hover:bg-gray-800/50"
-                  >
-                    <TableCell>
-                      <div className="font-medium text-white">
-                        {prospect.first_name} {prospect.last_name}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-gray-300">{prospect.position}</TableCell>
-                    <TableCell className="text-gray-300">{prospect.age}</TableCell>
-                    <TableCell className="text-center">{getRatingDisplay(prospect)}</TableCell>
-                    <TableCell className="text-center">{getPotentialDisplay(prospect)}</TableCell>
-                    <TableCell>{getScoutingBadge(prospect.scouting_accuracy)}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => {
-                            setSelectedProspect(prospect);
-                            setIsScoutingOpen(true);
-                          }}
-                          disabled={isPending}
+                {visibleProspects.map((prospect) => {
+                  const isFavorite = favorites.has(prospect.id);
+                  return (
+                    <TableRow
+                      key={prospect.id}
+                      className={`border-gray-800 hover:bg-gray-800/50 ${isFavorite ? 'bg-yellow-900/10' : ''}`}
+                    >
+                      <TableCell className="w-8 pr-0">
+                        <button
+                          onClick={() => toggleFavorite(prospect.id)}
+                          className="p-1 hover:bg-gray-700 rounded transition-colors"
+                          title={isFavorite ? 'Remove from watchlist' : 'Add to watchlist'}
                         >
-                          Scout
-                        </Button>
-                        {isPlayerTurn && (
+                          <svg
+                            className={`w-4 h-4 ${isFavorite ? 'text-yellow-400 fill-yellow-400' : 'text-gray-600 hover:text-yellow-400'}`}
+                            fill={isFavorite ? 'currentColor' : 'none'}
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+                          </svg>
+                        </button>
+                      </TableCell>
+                      <TableCell className="font-mono text-amber-500 font-bold">
+                        #{prospect.media_rank ?? '-'}
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium text-white">
+                          {prospect.first_name} {prospect.last_name}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-gray-300">{prospect.position}</TableCell>
+                      <TableCell className="text-gray-300">{prospect.age}</TableCell>
+                      <TableCell className="text-center">{getRatingDisplay(prospect)}</TableCell>
+                      <TableCell className="text-center">{getPotentialDisplay(prospect)}</TableCell>
+                      <TableCell>
+                        {prospect.scouting_accuracy ? (
+                          getScoutingBadge(prospect.scouting_accuracy)
+                        ) : (
+                          getArchetypeBadge(prospect.archetype)
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
                           <Button
                             size="sm"
-                            className="bg-amber-600 hover:bg-amber-500"
-                            onClick={() => handleDraft(prospect.id)}
+                            variant="outline"
+                            onClick={() => {
+                              setSelectedProspect(prospect);
+                              setIsScoutingOpen(true);
+                            }}
                             disabled={isPending}
                           >
-                            Draft
+                            Scout
                           </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                          {isPlayerTurn && (
+                            <Button
+                              size="sm"
+                              className="bg-amber-600 hover:bg-amber-500"
+                              onClick={() => handleDraft(prospect.id)}
+                              disabled={isPending}
+                            >
+                              Draft
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
 
@@ -600,6 +881,8 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
           </CardContent>
         </Card>
       )}
+        </div>
+      </div>
 
       {/* Scouting Dialog */}
       <Dialog open={isScoutingOpen} onOpenChange={setIsScoutingOpen}>

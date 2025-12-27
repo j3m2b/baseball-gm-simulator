@@ -352,6 +352,8 @@ export interface Database {
           scouting_accuracy: 'low' | 'medium' | 'high' | null;
           is_drafted: boolean;
           drafted_by_team: string | null;
+          media_rank: number;
+          archetype: string;
           created_at: string;
         };
         Insert: {
@@ -373,6 +375,8 @@ export interface Database {
           scouting_accuracy?: 'low' | 'medium' | 'high' | null;
           is_drafted?: boolean;
           drafted_by_team?: string | null;
+          media_rank: number;
+          archetype: string;
           created_at?: string;
         };
         Update: {
@@ -394,6 +398,8 @@ export interface Database {
           scouting_accuracy?: 'low' | 'medium' | 'high' | null;
           is_drafted?: boolean;
           drafted_by_team?: string | null;
+          media_rank?: number;
+          archetype?: string;
           created_at?: string;
         };
       };
@@ -602,6 +608,8 @@ export interface Database {
           player_id: string | null;
           building_id: number | null;
           is_read: boolean;
+          duration_years: number | null;
+          expires_year: number | null;
           created_at: string;
         };
         Insert: {
@@ -615,6 +623,8 @@ export interface Database {
           player_id?: string | null;
           building_id?: number | null;
           is_read?: boolean;
+          duration_years?: number | null;
+          expires_year?: number | null;
           created_at?: string;
         };
         Update: {
@@ -628,6 +638,44 @@ export interface Database {
           player_id?: string | null;
           building_id?: number | null;
           is_read?: boolean;
+          duration_years?: number | null;
+          expires_year?: number | null;
+          created_at?: string;
+        };
+      };
+
+      active_effects: {
+        Row: {
+          id: string;
+          game_id: string;
+          event_id: string | null;
+          effect_type: string;
+          modifier: number;
+          start_year: number;
+          end_year: number | null;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          event_id?: string | null;
+          effect_type: string;
+          modifier: number;
+          start_year: number;
+          end_year?: number | null;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          game_id?: string;
+          event_id?: string | null;
+          effect_type?: string;
+          modifier?: number;
+          start_year?: number;
+          end_year?: number | null;
+          is_active?: boolean;
           created_at?: string;
         };
       };

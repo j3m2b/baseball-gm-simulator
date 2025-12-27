@@ -29,6 +29,19 @@ export type DifficultyMode = 'easy' | 'normal' | 'hard';
 
 export type GamePhase = 'pre_season' | 'draft' | 'season' | 'post_season' | 'off_season';
 
+// Player archetypes based on dominant attributes
+export type Archetype =
+  | 'Slugger'      // High power hitter
+  | 'Speedster'    // High speed player
+  | 'Contact King' // High hit rating
+  | 'Glove Wizard' // High fielding
+  | 'Cannon Arm'   // High arm strength
+  | 'Flamethrower' // High stuff (pitcher)
+  | 'Command Ace'  // High control (pitcher)
+  | 'Movement Master' // High movement (pitcher)
+  | 'Playmaker'    // Balanced/well-rounded
+  | 'Raw Talent';  // High potential but unrefined
+
 // ============================================
 // TIER CONFIGURATION
 // ============================================
@@ -246,6 +259,10 @@ export interface DraftProspect extends Omit<Player, 'id' | 'gameId' | 'tier' | '
   scoutingAccuracy: ScoutingTier | null;
   isDrafted: boolean;
   draftedByTeam: string | null;
+
+  // Smart Draft features
+  mediaRank: number;        // Consensus rank (1-800) based on potential + noise
+  archetype: Archetype;     // Player archetype based on dominant attributes
 }
 
 // ============================================
