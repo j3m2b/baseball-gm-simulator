@@ -27,7 +27,11 @@ import {
   advancePhase,
   getDraftPicks,
   refreshProspects,
+  completeDraftAndTransition,
+  type DraftSimulationResult,
+  type RosterOptimizationResult,
 } from '@/lib/actions/game';
+import DraftCompleteModal from '../draft/DraftCompleteModal';
 import { formatCurrency } from '@/lib/utils/format';
 import { AI_TEAMS } from '@/lib/types';
 import DraftNeeds from './DraftNeeds';
@@ -106,6 +110,12 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
   const [isScoutingOpen, setIsScoutingOpen] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
   const [currentReserves, setCurrentReserves] = useState(reserves);
+
+  // Draft completion state
+  const [isSimulatingRemainder, setIsSimulatingRemainder] = useState(false);
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [draftResults, setDraftResults] = useState<DraftSimulationResult | null>(null);
+  const [rosterResults, setRosterResults] = useState<RosterOptimizationResult | null>(null);
 
   // Sorting - default to media rank ascending (best prospects first)
   const [sortField, setSortField] = useState<SortField>('media_rank');
@@ -399,6 +409,28 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
     router.refresh();
   }
 
+  async function handleSimulateRemainder() {
+    setIsSimulatingRemainder(true);
+
+    try {
+      const result = await completeDraftAndTransition(gameId);
+
+      if (result.success) {
+        setDraftResults(result.draftResults);
+        setRosterResults(result.rosterResults);
+        setDraftState(prev => ({ ...prev, is_complete: true }));
+        setShowCompleteModal(true);
+      } else {
+        alert(`Failed to complete draft: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error completing draft:', error);
+      alert('An error occurred while completing the draft.');
+    } finally {
+      setIsSimulatingRemainder(false);
+    }
+  }
+
   function getRatingDisplay(prospect: Prospect) {
     if (prospect.scouted_rating !== null) {
       return (
@@ -534,6 +566,25 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
                   </Badge>
                 )}
               </div>
+
+              {/* Simulate Remainder Button */}
+              <Button
+                onClick={handleSimulateRemainder}
+                disabled={isSimulatingRemainder || isSimulating}
+                className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white"
+              >
+                {isSimulatingRemainder ? (
+                  <>
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Simulating...
+                  </>
+                ) : (
+                  <>Sim to End & Start Season</>
+                )}
+              </Button>
             </div>
           </div>
         </CardContent>
@@ -932,6 +983,42 @@ export default function DraftTab({ gameId, draftState: initialDraftState, prospe
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Loading Overlay */}
+      {isSimulatingRemainder && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-8 text-center max-w-md">
+            <div className="mb-6">
+              <svg className="animate-spin mx-auto h-16 w-16 text-amber-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </div>
+            <h3 className="text-xl font-semibold text-white mb-2">
+              Simulating Draft & Setting Lineups...
+            </h3>
+            <p className="text-gray-400">
+              Auto-drafting remaining picks and optimizing your roster.
+            </p>
+            <div className="mt-4 flex justify-center gap-1">
+              <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+              <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+              <span className="w-2 h-2 bg-amber-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Draft Complete Modal */}
+      {draftResults && rosterResults && (
+        <DraftCompleteModal
+          isOpen={showCompleteModal}
+          onClose={() => setShowCompleteModal(false)}
+          gameId={gameId}
+          draftResults={draftResults}
+          rosterResults={rosterResults}
+        />
+      )}
     </div>
   );
 }

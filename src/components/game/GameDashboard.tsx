@@ -17,7 +17,8 @@ import RecentEvents from './dashboard/RecentEvents';
 import GameOver from './GameOver';
 import { formatCurrency } from '@/lib/utils/format';
 
-import type { NewsStory } from '@/lib/types';
+import type { NewsStory, TrainingFocus } from '@/lib/types';
+import type { Json } from '@/lib/types/database';
 
 interface GameDashboardProps {
   game: {
@@ -57,13 +58,20 @@ interface GameDashboardProps {
     last_name: string;
     age: number;
     position: string;
-    player_type: string;
+    player_type: 'HITTER' | 'PITCHER';
     current_rating: number;
     potential: number;
     morale: number;
     tier: string;
     salary: number;
     roster_status: 'ACTIVE' | 'RESERVE';
+    // Training fields
+    training_focus: string;
+    current_xp: number;
+    progression_rate: number;
+    // Attributes (Json from database)
+    hitter_attributes?: Json | null;
+    pitcher_attributes?: Json | null;
     season_stats?: {
       // Batter stats
       games?: number;
@@ -381,6 +389,7 @@ export default function GameDashboard({
                   gameId={game.id}
                   facilityLevel={franchise?.facility_level ?? 0}
                   reserves={franchise?.reserves ?? 0}
+                  currentTier={game.current_tier as 'LOW_A' | 'HIGH_A' | 'DOUBLE_A' | 'TRIPLE_A' | 'MLB'}
                 />
               </TabsContent>
 

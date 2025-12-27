@@ -86,6 +86,9 @@ export interface Database {
           draft_year: number;
           draft_round: number;
           draft_pick: number;
+          training_focus: string;
+          current_xp: number;
+          progression_rate: number;
           created_at: string;
           updated_at: string;
         };
@@ -118,6 +121,9 @@ export interface Database {
           draft_year: number;
           draft_round: number;
           draft_pick: number;
+          training_focus?: string;
+          current_xp?: number;
+          progression_rate?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -150,6 +156,9 @@ export interface Database {
           draft_year?: number;
           draft_round?: number;
           draft_pick?: number;
+          training_focus?: string;
+          current_xp?: number;
+          progression_rate?: number;
           created_at?: string;
           updated_at?: string;
         };

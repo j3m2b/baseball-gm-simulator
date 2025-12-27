@@ -16,6 +16,9 @@ import { formatCurrency } from '@/lib/utils/format';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import PromotionModal from '../PromotionModal';
+import GameLog from '../season/GameLog';
+import PlayoffBracket from '../season/PlayoffBracket';
+import SeasonReview from '../season/SeasonReview';
 
 interface SeasonTabProps {
   gameId: string;
@@ -79,6 +82,9 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName, 
   const [canPromote, setCanPromote] = useState(false);
   const [nextTier, setNextTier] = useState<string | null>(null);
   const [isPromotionModalOpen, setIsPromotionModalOpen] = useState(false);
+  const [showPlayoffs, setShowPlayoffs] = useState(false);
+  const [playoffsComplete, setPlayoffsComplete] = useState(false);
+  const [showSeasonReview, setShowSeasonReview] = useState(false);
 
   const tierGameCounts: Record<string, number> = {
     LOW_A: 132,
@@ -229,6 +235,111 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName, 
     );
   }
 
+  // Show season review after playoffs complete or if team didn't make playoffs
+  if (showSeasonReview) {
+    return (
+      <SeasonReview
+        gameId={gameId}
+        onAdvance={() => {
+          setShowSeasonReview(false);
+          setResults(null);
+          setProgress(null);
+          router.refresh();
+        }}
+      />
+    );
+  }
+
+  // Show playoffs if in playoff mode
+  if (showPlayoffs && results?.madePlayoffs) {
+    return (
+      <div className="space-y-6">
+        {/* Back button and record summary */}
+        <Card className="bg-gray-900 border-gray-800">
+          <CardContent className="py-4">
+            <div className="flex justify-between items-center">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowPlayoffs(false)}
+                className="border-gray-700"
+              >
+                &larr; Back to Season Summary
+              </Button>
+              <div className="flex items-center gap-4">
+                <div className="text-sm text-gray-400">
+                  Regular Season: <span className="text-white font-medium">{results.wins}-{results.losses}</span>
+                </div>
+                <Badge className="bg-blue-600">#{results.leagueRank} Seed</Badge>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Playoff Bracket */}
+        <PlayoffBracket
+          gameId={gameId}
+          teamName={teamName}
+          onChampionshipWon={() => {
+            toast.success('CHAMPIONSHIP!', {
+              description: `${teamName} are the champions!`,
+              duration: 10000,
+            });
+            setPlayoffsComplete(true);
+          }}
+          onPlayoffsComplete={() => {
+            setPlayoffsComplete(true);
+            setShowPlayoffs(false);
+            setShowSeasonReview(true);
+          }}
+        />
+
+        {/* Promotion eligibility after playoffs */}
+        {playoffsComplete && canPromote && nextTier && (
+          <Card className="bg-gradient-to-r from-amber-900/30 to-amber-800/10 border-amber-600">
+            <CardContent className="py-6">
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-full bg-amber-600/20 flex items-center justify-center">
+                    <svg className="w-6 h-6 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                    </svg>
+                  </div>
+                  <div>
+                    <Badge className="bg-amber-600 mb-1">Promotion Eligible!</Badge>
+                    <p className="text-gray-300">
+                      Your franchise qualifies for promotion to {formatTier(nextTier)}!
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  onClick={() => setIsPromotionModalOpen(true)}
+                  className="bg-amber-600 hover:bg-amber-500 px-6"
+                >
+                  Level Up!
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Promotion Modal */}
+        {canPromote && nextTier && (
+          <PromotionModal
+            isOpen={isPromotionModalOpen}
+            onClose={() => setIsPromotionModalOpen(false)}
+            gameId={gameId}
+            currentTier={currentTier}
+            nextTier={nextTier}
+            winPercentage={results.winPercentage}
+            reserves={reserves}
+            cityPride={cityPride}
+          />
+        )}
+      </div>
+    );
+  }
+
   // Show season results if complete
   if (results) {
     return (
@@ -259,10 +370,27 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName, 
                 </div>
                 <p className="text-sm text-gray-400">League Rank</p>
               </div>
-              <div>
-                <Badge className={results.madePlayoffs ? 'bg-green-600' : 'bg-gray-600'}>
-                  {results.madePlayoffs ? 'Made Playoffs!' : 'Missed Playoffs'}
-                </Badge>
+              <div className="flex flex-col items-center gap-2">
+                {results.madePlayoffs ? (
+                  <Button
+                    onClick={() => setShowPlayoffs(true)}
+                    className="bg-green-600 hover:bg-green-500"
+                  >
+                    Enter Playoffs!
+                  </Button>
+                ) : (
+                  <>
+                    <Badge className="bg-gray-600">Missed Playoffs</Badge>
+                    <Button
+                      onClick={() => setShowSeasonReview(true)}
+                      variant="outline"
+                      size="sm"
+                      className="border-gray-600"
+                    >
+                      Continue to Offseason
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -504,8 +632,17 @@ export default function SeasonTab({ gameId, currentYear, currentTier, teamName, 
         </CardContent>
       </Card>
 
-      {/* Recent Events */}
-      {recentEvents.length > 0 && (
+      {/* Game Log with Box Scores */}
+      {gamesPlayed > 0 && (
+        <GameLog
+          gameId={gameId}
+          currentYear={currentYear}
+          gamesPlayed={gamesPlayed}
+        />
+      )}
+
+      {/* Recent Events Summary (collapsed) */}
+      {recentEvents.length > 0 && gamesPlayed === 0 && (
         <Card className="bg-gray-900 border-gray-800">
           <CardHeader>
             <CardTitle className="text-lg">Recent Games</CardTitle>

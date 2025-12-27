@@ -1,4 +1,4 @@
-# Baseball GM Simulator
+# Baseball GM Simulator v1.0.0
 
 > **You don't just build a team—you rebuild a city.**
 
@@ -24,7 +24,11 @@ Your success creates a self-reinforcing loop:
 
 Win games → Businesses open around the stadium → City pride grows → Attendance increases → Revenue rises → You can afford better players → You win more games.
 
-## Features
+## v1.0.0 Features
+
+### Complete Game Loop
+Play through an entire multi-year career with all core systems:
+- **Draft** → **Season** → **Playoffs** → **Offseason** → Repeat
 
 ### Five-Tier Progression System
 - **Low-A** → **High-A** → **Double-A** → **Triple-A** → **MLB**
@@ -58,6 +62,54 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 - Three scouting tiers reveal increasingly accurate ratings
 - 19 AI teams with distinct draft philosophies compete for talent
 
+### Full Season Simulation with Box Scores
+- **Batch game simulation** with real-time progress tracking
+- **Detailed box scores** for every game:
+  - Line scores (runs by inning)
+  - Complete batting statistics (AB, R, H, 2B, 3B, HR, RBI, BB, SO, AVG)
+  - Pitching statistics (IP, H, R, ER, BB, SO, ERA)
+  - Game decisions (W, L, SV)
+- **Game log** with full season history
+- Click any game to view the complete box score
+
+### Player Training System
+- Train players during the season to boost specific attributes
+- Training focus options: Contact, Power, Speed, Fielding, Arm Strength
+- Pitchers can focus on: Velocity, Control, Movement, Stamina
+- Training effects accumulate over the season
+- Work ethic influences training effectiveness
+
+### Playoff System
+- **4-team playoff bracket** (top teams by record)
+- **Best-of-7 semifinal series**
+- **Best-of-7 championship finals**
+- Interactive **playoff bracket visualization**
+- Simulate one game at a time or advance through series
+- Championship celebration for winners
+
+### Offseason Rollover System
+- **Season Review**: Complete summary of your season
+  - Final record and win percentage
+  - League ranking and playoff result
+  - Financial summary (revenue, expenses, net income)
+  - Team MVP and top performers
+  - Expiring contracts warning
+- **Winter Development**: Age-based player progression
+  - Young players (18-24): Potential growth (+1 to +3)
+  - Prime years (25-29): Maintain peak or slight growth
+  - Decline phase (30+): Gradual decline based on age
+- **Contract Processing**: Automatic free agent departures
+- **Draft Order**: Inverse standings (worst team picks first)
+- Seamless transition to Year 2, 3, 4... and beyond!
+
+### Contract & Free Agency System
+- **Salary calculations** based on rating and tier
+- **Multi-year contracts** with varying lengths
+- **Contract negotiations** with player acceptance probability
+- **Free agent market** for off-roster players
+- **Payroll management** with budget constraints
+- **Expiring contract warnings** before offseason
+
 ### Narrative Event Engine
 - Dynamic events based on team performance and city state
 - Event types: Economic, Team, City, and Story events
@@ -69,6 +121,7 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 - 50 buildings that evolve based on team success
 - Buildings progress: Vacant → Renovating → Open → Expanded → Landmark
 - Watch your struggling town transform into a thriving baseball city
+- District bonuses affect team performance and revenue
 
 ### Realistic Financial Simulation
 - Revenue streams: tickets, concessions, parking, merchandise, sponsorships
@@ -76,8 +129,14 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 - Budget grows with tier progression and city development
 - Facility upgrades for expanded roster capacity
 
+### League Standings & Leaders
+- **Real-time standings** showing all teams in your league
+- **Statistical leaders** for batting and pitching categories
+- Track your team's position throughout the season
+
 ### Win/Loss Conditions
 - **Promotion**: Meet requirements and level up to the next tier
+- **Championship**: Win the playoffs to become champion
 - **Bankruptcy (Game Over)**: Reserves below -$2M ends your career
 - Post-game summary with career statistics
 
@@ -85,44 +144,14 @@ Win games → Businesses open around the stadium → City pride grows → Attend
 
 | Technology | Purpose |
 |------------|---------|
-| **Next.js 15** | React framework with App Router and Server Actions |
+| **Next.js 16** | React framework with App Router and Server Actions |
+| **React 19** | Latest React with concurrent features |
 | **TypeScript** | Type-safe development |
-| **Tailwind CSS** | Utility-first styling |
+| **Tailwind CSS 4** | Utility-first styling |
 | **Supabase** | PostgreSQL database with Row Level Security |
 | **Radix UI** | Accessible component primitives |
 | **Sonner** | Toast notifications |
-
-## Development Status
-
-- [x] **Phase 1: Core Simulation Engine**
-  - Player development formulas with Gaussian distribution
-  - Season simulation with batch processing
-  - Financial calculations
-  - City growth mechanics
-
-- [x] **Phase 2: Core UI**
-  - Landing page with new/load/delete game
-  - Game dashboard with tabbed navigation
-  - Two-tier roster management (Active/Reserve)
-  - 40-round draft system with War Room toolbar
-
-- [x] **Phase 3: City Visualization & Game Loop**
-  - Season simulation with real-time progress
-  - City building grid visualization
-  - Financial projections and history
-  - Facility upgrades system
-
-- [x] **Phase 4: Narrative Events & Progression**
-  - Narrative event engine with effects
-  - Tier promotion system with bonuses
-  - Bankruptcy detection and game over
-  - Toast notifications for events
-
-- [ ] **Phase 5: Polish & Launch**
-  - Tutorial and onboarding
-  - Achievement system
-  - Performance optimization
-  - Mobile responsiveness
+| **Lucide React** | Beautiful icons |
 
 ## Getting Started
 
@@ -165,10 +194,14 @@ Win games → Businesses open around the stadium → City pride grows → Attend
    In the Supabase dashboard SQL Editor, run the migrations in order:
    ```
    supabase/migrations/001_initial_schema.sql
-   supabase/migrations/002_draft_enhancements.sql
+   supabase/migrations/002_smart_draft_features.sql
    supabase/migrations/003_narrative_events.sql
    supabase/migrations/004_game_progression.sql
    supabase/migrations/005_roster_tiers.sql
+   supabase/migrations/005_game_results.sql
+   supabase/migrations/006_player_training.sql
+   supabase/migrations/007_playoffs.sql
+   supabase/migrations/008_offseason_rollover.sql
    ```
 
    Or via Supabase CLI:
@@ -205,14 +238,39 @@ baseball-gm-simulator/
 │   │   │   ├── GameOver.tsx          # Bankruptcy/fired screen
 │   │   │   ├── PromotionModal.tsx    # Tier promotion modal
 │   │   │   ├── FacilitiesUpgrade.tsx # Facility upgrade card
-│   │   │   ├── dashboard/
-│   │   │   │   └── RecentEvents.tsx  # Narrative events display
-│   │   │   └── tabs/
+│   │   │   │
+│   │   │   ├── city/                 # City building system
+│   │   │   │   ├── CityMap.tsx       # City grid visualization
+│   │   │   │   ├── BuildMenu.tsx     # Building construction
+│   │   │   │   └── DistrictBonusPanel.tsx
+│   │   │   │
+│   │   │   ├── dashboard/            # Dashboard widgets
+│   │   │   │   ├── RecentEvents.tsx  # Narrative events display
+│   │   │   │   ├── NewsFeed.tsx      # Dynamic news headlines
+│   │   │   │   ├── TeamStandings.tsx # League standings
+│   │   │   │   └── LeagueLeaders.tsx # Statistical leaders
+│   │   │   │
+│   │   │   ├── draft/                # Draft system
+│   │   │   │   └── DraftCompleteModal.tsx
+│   │   │   │
+│   │   │   ├── roster/               # Roster management
+│   │   │   │   ├── ContractManagement.tsx
+│   │   │   │   ├── FreeAgentMarket.tsx
+│   │   │   │   ├── PlayerTraining.tsx
+│   │   │   │   └── TrainingSummary.tsx
+│   │   │   │
+│   │   │   ├── season/               # Season & playoffs
+│   │   │   │   ├── BoxScoreModal.tsx # Detailed game box scores
+│   │   │   │   ├── GameLog.tsx       # Season game history
+│   │   │   │   ├── PlayoffBracket.tsx # Playoff visualization
+│   │   │   │   └── SeasonReview.tsx  # End-of-season summary
+│   │   │   │
+│   │   │   └── tabs/                 # Main navigation tabs
 │   │   │       ├── OverviewTab.tsx   # Game overview & phase actions
 │   │   │       ├── RosterTab.tsx     # Two-tier roster management
 │   │   │       ├── DraftTab.tsx      # Draft with War Room toolbar
 │   │   │       ├── DraftNeeds.tsx    # Roster composition targets
-│   │   │       ├── SeasonTab.tsx     # Season simulation
+│   │   │       ├── SeasonTab.tsx     # Season simulation & playoffs
 │   │   │       ├── CityTab.tsx       # City building visualization
 │   │   │       ├── FinancesTab.tsx   # Revenue, expenses, facilities
 │   │   │       └── HistoryTab.tsx    # Season records & events
@@ -225,11 +283,18 @@ baseball-gm-simulator/
 │       │
 │       ├── simulation/               # Core game engine
 │       │   ├── index.ts              # Main exports
+│       │   ├── math-engine.ts        # Pythagorean expectation, Log5
 │       │   ├── player-development.ts # Growth formulas
-│       │   ├── season.ts             # Game simulation
+│       │   ├── season.ts             # Season simulation
+│       │   ├── box-score.ts          # Detailed game simulation
+│       │   ├── playoffs.ts           # Playoff bracket & series
+│       │   ├── offseason.ts          # Offseason rollover system
+│       │   ├── training.ts           # Player training system
+│       │   ├── contracts.ts          # Contract & free agency
 │       │   ├── financial.ts          # Revenue/expense calculations
 │       │   ├── city-growth.ts        # Building upgrades
 │       │   ├── draft.ts              # Draft with Gaussian distribution
+│       │   ├── headline-generator.ts # Dynamic news generation
 │       │   ├── events.ts             # Narrative event engine
 │       │   └── progression.ts        # Promotion/bankruptcy logic
 │       │
@@ -243,15 +308,20 @@ baseball-gm-simulator/
 │       │   └── database.ts           # Supabase schema types
 │       │
 │       └── utils/
-│           └── format.ts             # Currency, number formatting
+│           ├── format.ts             # Currency, number formatting
+│           └── random.ts             # Random number utilities
 │
 ├── supabase/
 │   └── migrations/
 │       ├── 001_initial_schema.sql    # Core database schema
-│       ├── 002_draft_enhancements.sql # Draft system tables
+│       ├── 002_smart_draft_features.sql # Draft system tables
 │       ├── 003_narrative_events.sql  # Events and effects tables
 │       ├── 004_game_progression.sql  # Promotion history, game status
-│       └── 005_roster_tiers.sql      # Roster status, facilities
+│       ├── 005_roster_tiers.sql      # Roster status, facilities
+│       ├── 005_game_results.sql      # Game results & box scores
+│       ├── 006_player_training.sql   # Training system tables
+│       ├── 007_playoffs.sql          # Playoff brackets & series
+│       └── 008_offseason_rollover.sql # Career stats, team history
 │
 ├── public/                           # Static assets
 ├── .env.local.example                # Environment template
@@ -303,6 +373,17 @@ Player ratings follow a normal distribution (Box-Muller transform):
 | Double-A | $8M | 10,000 | 138 | 50-72 |
 | Triple-A | $25M | 18,000 | 144 | 60-80 |
 | MLB | $150M | 42,000 | 162 | 70-85 |
+
+### Winter Development (Offseason)
+
+| Age Range | Effect | Description |
+|-----------|--------|-------------|
+| 18-21 | +1 to +3 | Young prospect high growth |
+| 22-24 | +1 to +2 | Continued development |
+| 25-29 | 0 to +1 | Prime years maintenance |
+| 30-33 | 0 to -1 | Early aging effects |
+| 34-36 | 0 to -2 | Decline phase |
+| 37+ | -1 to -3 | Late career decline |
 
 ### Promotion Requirements
 
@@ -357,13 +438,42 @@ The easiest way to deploy is via [Vercel](https://vercel.com):
 | `src/lib/types/index.ts` | All TypeScript types, facility configs, AI teams |
 | `src/lib/types/database.ts` | Supabase database schema types |
 | `src/lib/actions/game.ts` | Server actions for all game operations |
+| `src/lib/simulation/math-engine.ts` | Pythagorean expectation, Log5 probability |
 | `src/lib/simulation/player-development.ts` | Player growth calculations |
+| `src/lib/simulation/box-score.ts` | Detailed game simulation |
+| `src/lib/simulation/playoffs.ts` | Playoff bracket and series |
+| `src/lib/simulation/offseason.ts` | Winter development, draft order |
+| `src/lib/simulation/training.ts` | Player training system |
+| `src/lib/simulation/contracts.ts` | Contract and free agency |
 | `src/lib/simulation/season.ts` | Season simulation engine |
 | `src/lib/simulation/financial.ts` | Financial calculations |
 | `src/lib/simulation/city-growth.ts` | City evolution system |
 | `src/lib/simulation/draft.ts` | Draft with Gaussian distribution |
+| `src/lib/simulation/headline-generator.ts` | Dynamic news system |
 | `src/lib/simulation/events.ts` | Narrative event engine |
 | `src/lib/simulation/progression.ts` | Promotion and bankruptcy logic |
+
+## What's New in v1.0.0
+
+- **Complete Game Loop**: Full Draft → Season → Playoffs → Offseason cycle
+- **Box Score System**: Detailed game simulation with batting/pitching stats
+- **Game Log**: View any game's box score from the season
+- **Playoff System**: 4-team bracket with best-of-7 series
+- **Player Training**: Develop players during the season
+- **Offseason Rollover**: Winter development, contract processing, draft order
+- **Season Review UI**: Comprehensive end-of-season summary
+- **Contract Management**: Full contract and free agency system
+- **League Standings**: Real-time standings and statistical leaders
+- **Updated Tech Stack**: Next.js 16, React 19, Tailwind CSS 4
+
+## Roadmap
+
+- [ ] **v1.1**: Tutorial and onboarding experience
+- [ ] **v1.2**: Achievement system and milestones
+- [ ] **v1.3**: Trade system between teams
+- [ ] **v1.4**: Enhanced scouting with scout hiring
+- [ ] **v1.5**: Mobile-responsive design improvements
+- [ ] **v2.0**: Multiplayer leagues
 
 ## Contributing
 

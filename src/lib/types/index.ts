@@ -48,6 +48,67 @@ export type Archetype =
   | 'Playmaker'    // Balanced/well-rounded
   | 'Raw Talent';  // High potential but unrefined
 
+// Training Focus - determines which attribute gains XP
+export type HitterTrainingFocus = 'hit' | 'power' | 'speed' | 'arm' | 'field';
+export type PitcherTrainingFocus = 'stuff' | 'control' | 'movement';
+export type TrainingFocus = HitterTrainingFocus | PitcherTrainingFocus | 'overall';
+
+// Training focus configuration
+export const TRAINING_FOCUS_CONFIG: Record<TrainingFocus, {
+  label: string;
+  description: string;
+  playerType: 'HITTER' | 'PITCHER' | 'BOTH';
+}> = {
+  // Hitter focuses
+  hit: {
+    label: 'Contact',
+    description: 'Improve plate discipline and bat-to-ball skills',
+    playerType: 'HITTER',
+  },
+  power: {
+    label: 'Power',
+    description: 'Build raw strength for extra-base hits',
+    playerType: 'HITTER',
+  },
+  speed: {
+    label: 'Speed',
+    description: 'Improve baserunning and stolen base ability',
+    playerType: 'HITTER',
+  },
+  arm: {
+    label: 'Arm Strength',
+    description: 'Develop throwing power and accuracy',
+    playerType: 'HITTER',
+  },
+  field: {
+    label: 'Defense',
+    description: 'Sharpen fielding mechanics and range',
+    playerType: 'HITTER',
+  },
+  // Pitcher focuses
+  stuff: {
+    label: 'Velocity',
+    description: 'Increase pitch speed and movement quality',
+    playerType: 'PITCHER',
+  },
+  control: {
+    label: 'Command',
+    description: 'Improve pitch location and accuracy',
+    playerType: 'PITCHER',
+  },
+  movement: {
+    label: 'Movement',
+    description: 'Develop pitch break and deception',
+    playerType: 'PITCHER',
+  },
+  // Universal
+  overall: {
+    label: 'Balanced',
+    description: 'Steady improvement across all skills',
+    playerType: 'BOTH',
+  },
+};
+
 // ============================================
 // TIER CONFIGURATION
 // ============================================
@@ -56,6 +117,9 @@ export interface TierConfig {
   tier: Tier;
   name: string;
   budget: number;
+  salaryCap: number;        // Maximum total payroll allowed
+  minSalary: number;        // Minimum player salary
+  maxSalary: number;        // Maximum individual player salary
   stadiumCapacity: number;
   seasonLength: number;
   averageOpponentStrength: number;
@@ -81,6 +145,9 @@ export const TIER_CONFIGS: Record<Tier, TierConfig> = {
     tier: 'LOW_A',
     name: 'Low-A',
     budget: 500000,
+    salaryCap: 300000,        // ~60% of budget for payroll
+    minSalary: 5000,          // Minimum salary per player
+    maxSalary: 25000,         // Max individual salary
     stadiumCapacity: 2500,
     seasonLength: 132,
     averageOpponentStrength: 42,
@@ -102,6 +169,9 @@ export const TIER_CONFIGS: Record<Tier, TierConfig> = {
     tier: 'HIGH_A',
     name: 'High-A',
     budget: 2000000,
+    salaryCap: 1200000,       // ~60% of budget for payroll
+    minSalary: 15000,
+    maxSalary: 80000,
     stadiumCapacity: 5000,
     seasonLength: 132,
     averageOpponentStrength: 48,
@@ -124,6 +194,9 @@ export const TIER_CONFIGS: Record<Tier, TierConfig> = {
     tier: 'DOUBLE_A',
     name: 'Double-A',
     budget: 8000000,
+    salaryCap: 5000000,       // ~62% of budget for payroll
+    minSalary: 50000,
+    maxSalary: 400000,
     stadiumCapacity: 10000,
     seasonLength: 138,
     averageOpponentStrength: 55,
@@ -146,6 +219,9 @@ export const TIER_CONFIGS: Record<Tier, TierConfig> = {
     tier: 'TRIPLE_A',
     name: 'Triple-A',
     budget: 25000000,
+    salaryCap: 15000000,      // ~60% of budget for payroll
+    minSalary: 150000,
+    maxSalary: 1500000,
     stadiumCapacity: 18000,
     seasonLength: 144,
     averageOpponentStrength: 62,
@@ -168,6 +244,9 @@ export const TIER_CONFIGS: Record<Tier, TierConfig> = {
     tier: 'MLB',
     name: 'MLB',
     budget: 150000000,
+    salaryCap: 100000000,     // ~67% of budget for payroll (competitive MLB)
+    minSalary: 750000,        // MLB minimum
+    maxSalary: 35000000,      // Star player max
     stadiumCapacity: 42000,
     seasonLength: 162,
     averageOpponentStrength: 70,
@@ -285,6 +364,11 @@ export interface Player {
   morale: number;           // 0-100
   gamesPlayed: number;
   yearsInOrg: number;
+
+  // Training System
+  trainingFocus: TrainingFocus;  // Skill being trained
+  currentXp: number;             // 0-100, triggers +1 rating at 100
+  progressionRate: number;       // Hidden modifier (0.5-2.0) based on age/potential
 
   // Contract
   salary: number;
@@ -1152,3 +1236,158 @@ export const AI_TEAMS: AITeam[] = [
     varianceMultiplier: 1.0,
   },
 ];
+
+// ============================================
+// BOX SCORE TYPES (Game Results)
+// ============================================
+
+export interface BatterBoxScore {
+  playerId: string;
+  name: string;
+  position: Position;
+  battingOrder: number;
+  ab: number;       // At-bats
+  r: number;        // Runs
+  h: number;        // Hits
+  doubles: number;  // 2B
+  triples: number;  // 3B
+  hr: number;       // Home runs
+  rbi: number;      // Runs batted in
+  bb: number;       // Walks
+  so: number;       // Strikeouts
+  sb: number;       // Stolen bases
+  avg: number;      // Batting average this game
+}
+
+export interface PitcherBoxScore {
+  playerId: string;
+  name: string;
+  ip: number;       // Innings pitched (e.g., 6.2)
+  h: number;        // Hits allowed
+  r: number;        // Runs allowed
+  er: number;       // Earned runs
+  bb: number;       // Walks
+  so: number;       // Strikeouts
+  hr: number;       // Home runs allowed
+  pitchCount: number;
+  strikes: number;
+  isWin: boolean;
+  isLoss: boolean;
+  isSave: boolean;
+  isHold: boolean;
+  era: number;      // ERA for this game
+}
+
+export interface GameResult {
+  id: string;
+  gameId: string;
+  seasonId: string;
+  year: number;
+  gameNumber: number;
+
+  // Teams
+  playerTeamName: string;
+  opponentName: string;
+  isHome: boolean;
+
+  // Final Score
+  playerRuns: number;
+  opponentRuns: number;
+  isWin: boolean;
+
+  // Line Score (inning by inning)
+  playerLineScore: number[];  // [0, 1, 0, 2, 0, 0, 3, 0, 1]
+  opponentLineScore: number[];
+
+  // Team Totals
+  playerHits: number;
+  playerErrors: number;
+  opponentHits: number;
+  opponentErrors: number;
+
+  // Detailed Stats
+  battingStats: BatterBoxScore[];
+  pitchingStats: PitcherBoxScore[];
+
+  // Metadata
+  attendance: number;
+  gameDurationMinutes?: number;
+  weather?: string;
+
+  createdAt: Date;
+}
+
+export interface GameLogEntry {
+  id: string;
+  gameNumber: number;
+  isHome: boolean;
+  opponentName: string;
+  playerRuns: number;
+  opponentRuns: number;
+  isWin: boolean;
+  playerHits: number;
+  playerErrors: number;
+  opponentHits: number;
+  opponentErrors: number;
+  attendance: number;
+  createdAt: Date;
+}
+
+// ============================================
+// PLAYOFF TYPES
+// ============================================
+
+export type PlayoffStatus = 'pending' | 'semifinals' | 'finals' | 'complete';
+export type SeriesStatus = 'pending' | 'in_progress' | 'complete';
+export type PlayoffRound = 'semifinals' | 'finals';
+
+export interface PlayoffTeam {
+  id: string; // 'player' or AI team id
+  name: string;
+  seed: number;
+  wins: number;
+  losses: number;
+  winPct: number;
+}
+
+export interface PlayoffGame {
+  id: string;
+  seriesId: string;
+  gameNumber: number;
+  homeTeamId: string;
+  awayTeamId: string;
+  homeScore: number | null;
+  awayScore: number | null;
+  winnerId: string | null;
+  isComplete: boolean;
+  homeLineScore: number[];
+  awayLineScore: number[];
+  attendance: number;
+}
+
+export interface PlayoffSeries {
+  id: string;
+  bracketId: string;
+  round: PlayoffRound;
+  seriesNumber: number;
+  team1: PlayoffTeam;
+  team2: PlayoffTeam;
+  team1Wins: number;
+  team2Wins: number;
+  status: SeriesStatus;
+  winnerId: string | null;
+  winnerName: string | null;
+  games: PlayoffGame[];
+}
+
+export interface PlayoffBracket {
+  id: string;
+  gameId: string;
+  seasonId: string;
+  year: number;
+  status: PlayoffStatus;
+  championTeamId: string | null;
+  championTeamName: string | null;
+  semifinals: PlayoffSeries[];
+  finals: PlayoffSeries | null;
+}

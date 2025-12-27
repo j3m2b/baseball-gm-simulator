@@ -15,8 +15,13 @@ import {
 import { movePlayer } from '@/lib/actions/game';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
-import { FACILITY_CONFIGS, type FacilityLevel } from '@/lib/types';
-import { ArrowUp, ArrowDown } from 'lucide-react';
+import { FACILITY_CONFIGS, TIER_CONFIGS, TRAINING_FOCUS_CONFIG, type FacilityLevel, type Tier, type TrainingFocus } from '@/lib/types';
+import type { Json } from '@/lib/types/database';
+import { ArrowUp, ArrowDown, ChevronDown, ChevronUp, Users, UserPlus, Dumbbell } from 'lucide-react';
+import ContractManagement from '../roster/ContractManagement';
+import FreeAgentMarket from '../roster/FreeAgentMarket';
+import PlayerTraining from '../roster/PlayerTraining';
+import TrainingSummary from '../roster/TrainingSummary';
 
 interface SeasonStats {
   // Batter stats (optional)
@@ -42,7 +47,7 @@ interface Player {
   last_name: string;
   age: number;
   position: string;
-  player_type: string;
+  player_type: 'HITTER' | 'PITCHER';
   current_rating: number;
   potential: number;
   morale: number;
@@ -50,6 +55,13 @@ interface Player {
   salary: number;
   roster_status: 'ACTIVE' | 'RESERVE';
   season_stats?: SeasonStats | null;
+  // Training fields
+  training_focus: string;
+  current_xp: number;
+  progression_rate: number;
+  // Attributes (Json from database, cast when needed)
+  hitter_attributes?: Json | null;
+  pitcher_attributes?: Json | null;
 }
 
 interface RosterTabProps {
@@ -57,11 +69,18 @@ interface RosterTabProps {
   gameId: string;
   facilityLevel?: FacilityLevel;
   reserves?: number;
+  currentTier?: Tier;
 }
 
-export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves = 0 }: RosterTabProps) {
+export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves = 0, currentTier = 'LOW_A' }: RosterTabProps) {
   const router = useRouter();
   const [movingPlayerId, setMovingPlayerId] = useState<string | null>(null);
+  const [showContracts, setShowContracts] = useState(false);
+  const [showTraining, setShowTraining] = useState(false);
+  const [activeView, setActiveView] = useState<'roster' | 'freeAgents'>('roster');
+  const [selectedPlayerForTraining, setSelectedPlayerForTraining] = useState<Player | null>(null);
+
+  const tierConfig = TIER_CONFIGS[currentTier];
 
   // Separate active and reserve players
   const activePlayers = roster.filter(p => p.roster_status === 'ACTIVE');
@@ -210,6 +229,7 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
               {!hasSeasonStats && (
                 <TableHead className="text-gray-400 text-center">Potential</TableHead>
               )}
+              <TableHead className="text-gray-400 text-center">Training</TableHead>
               <TableHead className="text-gray-400 text-right">Salary</TableHead>
               <TableHead className="text-gray-400">Status</TableHead>
             </TableRow>
@@ -307,6 +327,28 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
                       </span>
                     </TableCell>
                   )}
+                  {/* Training Cell */}
+                  <TableCell className="text-center">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-amber-500 hover:text-amber-400 hover:bg-amber-500/10"
+                      onClick={() => setSelectedPlayerForTraining(player)}
+                      title={`Training: ${TRAINING_FOCUS_CONFIG[player.training_focus as TrainingFocus]?.label || 'Overall'}`}
+                    >
+                      <Dumbbell className="h-3 w-3 mr-1" />
+                      <span className="text-xs">
+                        {TRAINING_FOCUS_CONFIG[player.training_focus as TrainingFocus]?.label || 'Overall'}
+                      </span>
+                    </Button>
+                    {/* XP Progress bar */}
+                    <div className="w-full h-1 bg-gray-700 rounded mt-1 overflow-hidden">
+                      <div
+                        className="h-full bg-amber-500 transition-all"
+                        style={{ width: `${player.current_xp}%` }}
+                      />
+                    </div>
+                  </TableCell>
                   <TableCell className="text-right text-gray-300">
                     {formatCurrency(player.salary)}
                   </TableCell>
@@ -325,6 +367,38 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
 
   return (
     <div className="space-y-6">
+      {/* View Toggle */}
+      <div className="flex gap-2">
+        <Button
+          variant={activeView === 'roster' ? 'default' : 'outline'}
+          onClick={() => setActiveView('roster')}
+          className={activeView === 'roster' ? 'bg-amber-600 hover:bg-amber-500' : 'border-gray-700'}
+        >
+          <Users className="h-4 w-4 mr-2" />
+          My Roster ({roster.length})
+        </Button>
+        <Button
+          variant={activeView === 'freeAgents' ? 'default' : 'outline'}
+          onClick={() => setActiveView('freeAgents')}
+          className={activeView === 'freeAgents' ? 'bg-green-600 hover:bg-green-500' : 'border-gray-700'}
+        >
+          <UserPlus className="h-4 w-4 mr-2" />
+          Free Agent Market
+        </Button>
+      </div>
+
+      {/* Free Agent Market View */}
+      {activeView === 'freeAgents' && (
+        <FreeAgentMarket
+          gameId={gameId}
+          reserves={reserves}
+          salaryCap={tierConfig.salaryCap}
+        />
+      )}
+
+      {/* Roster View */}
+      {activeView === 'roster' && (
+        <>
       {/* Roster Summary */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <Card className="bg-gray-900 border-gray-800">
@@ -393,6 +467,28 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
           </div>
         </CardContent>
       </Card>
+
+      {/* Player Development Section */}
+      {roster.length > 0 && (
+        <Card className="bg-gray-900 border-gray-800">
+          <CardHeader className="cursor-pointer" onClick={() => setShowTraining(!showTraining)}>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Dumbbell className="h-5 w-5 text-amber-500" />
+                <span>Player Development</span>
+              </CardTitle>
+              <Button variant="ghost" size="sm" className="text-gray-400">
+                {showTraining ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+              </Button>
+            </div>
+          </CardHeader>
+          {showTraining && (
+            <CardContent>
+              <TrainingSummary gameId={gameId} />
+            </CardContent>
+          )}
+        </Card>
+      )}
 
       {/* Active Roster (25-Man) */}
       <Card className="bg-gray-900 border-gray-800">
@@ -466,6 +562,28 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
         </CardContent>
       </Card>
 
+      {/* Contract Management Section */}
+      {roster.length > 0 && (
+        <Card className="bg-gray-900 border-gray-800">
+          <CardHeader className="cursor-pointer" onClick={() => setShowContracts(!showContracts)}>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <span>$</span>
+                <span>Contracts & Payroll</span>
+              </CardTitle>
+              <Button variant="ghost" size="sm" className="text-gray-400">
+                {showContracts ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
+              </Button>
+            </div>
+          </CardHeader>
+          {showContracts && (
+            <CardContent>
+              <ContractManagement gameId={gameId} reserves={reserves} />
+            </CardContent>
+          )}
+        </Card>
+      )}
+
       {roster.length === 0 && (
         <Card className="bg-gray-900 border-gray-800">
           <CardContent className="py-12 text-center">
@@ -480,6 +598,41 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
             </p>
           </CardContent>
         </Card>
+      )}
+        </>
+      )}
+
+      {/* Player Training Modal */}
+      {selectedPlayerForTraining && (
+        <PlayerTraining
+          isOpen={!!selectedPlayerForTraining}
+          onClose={() => setSelectedPlayerForTraining(null)}
+          gameId={gameId}
+          player={{
+            id: selectedPlayerForTraining.id,
+            firstName: selectedPlayerForTraining.first_name,
+            lastName: selectedPlayerForTraining.last_name,
+            playerType: selectedPlayerForTraining.player_type,
+            position: selectedPlayerForTraining.position,
+            currentRating: selectedPlayerForTraining.current_rating,
+            potential: selectedPlayerForTraining.potential,
+            trainingFocus: selectedPlayerForTraining.training_focus as TrainingFocus,
+            currentXp: selectedPlayerForTraining.current_xp,
+            progressionRate: selectedPlayerForTraining.progression_rate,
+            hitterAttributes: selectedPlayerForTraining.hitter_attributes as {
+              hit: number;
+              power: number;
+              speed: number;
+              arm: number;
+              field: number;
+            } | null,
+            pitcherAttributes: selectedPlayerForTraining.pitcher_attributes as {
+              stuff: number;
+              control: number;
+              movement: number;
+            } | null,
+          }}
+        />
       )}
     </div>
   );

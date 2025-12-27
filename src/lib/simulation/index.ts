@@ -175,3 +175,121 @@ export {
 
   type HeadlineContext,
 } from './headline-generator';
+
+// Contract & Free Agency System
+export {
+  // Salary calculation
+  calculateSalary,
+  calculateContractYears,
+
+  // Contract generation
+  generateContractOffer,
+  generateRookieContract,
+
+  // Free agency
+  calculateResignProbability,
+  playerAcceptsOffer,
+  processContractExpiration,
+  decrementContracts,
+
+  // Payroll management
+  calculatePayroll,
+  canAffordSalary,
+
+  // Migration helpers
+  generateMigrationContract,
+
+  // Constants
+  CONTRACT_LENGTH_TIERS,
+  MORALE_THRESHOLDS,
+
+  // Types
+  type ContractOffer,
+  type PayrollSummary,
+  type FreeAgentResult,
+} from './contracts';
+
+// Box Score Simulation
+export {
+  // Single game simulation
+  simulateGame,
+  simulateGameBatch,
+  getRandomOpponent,
+} from './box-score';
+
+// Player Training System
+export {
+  // Training processing
+  processPlayerTraining,
+  processBatchTraining,
+  calculateProgressionRate,
+  getRecommendedTrainingFocus,
+  calculateTrainingSummary,
+
+  // Configuration
+  TRAINING_CONFIG,
+
+  // Types
+  type TrainingResult,
+  type BatchTrainingResult,
+  type TrainingSummary,
+} from './training';
+
+// Playoff System
+export {
+  // Bracket generation
+  generatePlayoffStandings,
+  generatePlayoffBracket,
+  generateFinalsSeries,
+
+  // Series simulation
+  simulatePlayoffGame,
+  simulatePlayoffSeries,
+  simulateNextSeriesGame,
+
+  // Helpers
+  didPlayerMakePlayoffs,
+  getPlayerSeed,
+  arePlayoffsComplete,
+  didPlayerWinChampionship,
+
+  // Types
+  type PlayoffStanding,
+  type PlayoffBracketInput,
+  type PlayoffGameResult,
+  type SeriesResult,
+} from './playoffs';
+
+// Offseason System
+export {
+  // Historical archiving
+  archiveSeasonStats,
+  createEmptySeasonStats,
+
+  // Winter development
+  calculateWinterDevelopment,
+  applyRatingChange,
+
+  // Contracts
+  processContractYear,
+
+  // Draft order
+  generateDraftOrder,
+  getPlayerDraftPosition,
+
+  // Playoff results
+  determinePlayoffResult,
+
+  // MVP
+  calculateMVPScore,
+  determineSeasonMVP,
+
+  // Types
+  type SeasonStatsSummary,
+  type CareerStats,
+  type TeamHistoryEntry,
+  type DraftOrderEntry,
+  type WinterDevelopmentResult,
+  type ContractExpirationResult,
+  type OffseasonSummary,
+} from './offseason';

@@ -2,11 +2,42 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
-import { generateInitialCity } from '@/lib/simulation/city-growth';
+import { generateInitialCity, calculateCityBonuses } from '@/lib/simulation/city-growth';
 import { generateDraftClass } from '@/lib/simulation/draft';
 import { checkForEventsWithTier, serializeEvent, applyEventEffects, type GameState as EventGameState, type NarrativeEvent } from '@/lib/simulation/events';
 import { generateGameHeadlines, generateCityHeadlines, generateMilestoneHeadlines, type HeadlineContext } from '@/lib/simulation/headline-generator';
-import { TIER_CONFIGS, AI_TEAMS, FACILITY_CONFIGS, BUILDING_DISTRICT_CONFIG, getRosterCapacities, type DifficultyMode, type Tier, type FacilityLevel, type RosterStatus, type NewsStory, type GameResultData, type PlayerGamePerformance, type CityEventData, type BuildingType, type Building } from '@/lib/types';
+import {
+  calculatePayroll,
+  generateContractOffer,
+  generateRookieContract,
+  processContractExpiration,
+  generateMigrationContract,
+  canAffordSalary,
+  type PayrollSummary,
+  type ContractOffer,
+  type FreeAgentResult,
+} from '@/lib/simulation/contracts';
+import { simulateGameBatch, getRandomOpponent } from '@/lib/simulation/box-score';
+import { processBatchTraining, calculateProgressionRate, getRecommendedTrainingFocus, type TrainingResult } from '@/lib/simulation/training';
+import { generatePlayoffBracket, generateFinalsSeries, simulateNextSeriesGame, type PlayoffStanding, type PlayoffGameResult } from '@/lib/simulation/playoffs';
+import {
+  archiveSeasonStats,
+  createEmptySeasonStats,
+  calculateWinterDevelopment,
+  applyRatingChange,
+  processContractYear,
+  generateDraftOrder,
+  getPlayerDraftPosition,
+  determinePlayoffResult,
+  determineSeasonMVP,
+  type SeasonStatsSummary,
+  type TeamHistoryEntry,
+  type DraftOrderEntry,
+  type WinterDevelopmentResult,
+  type ContractExpirationResult,
+  type OffseasonSummary,
+} from '@/lib/simulation/offseason';
+import { TIER_CONFIGS, AI_TEAMS, FACILITY_CONFIGS, BUILDING_DISTRICT_CONFIG, getRosterCapacities, DEFAULT_DISTRICT_BONUSES, type DifficultyMode, type Tier, type FacilityLevel, type RosterStatus, type NewsStory, type GameResultData, type PlayerGamePerformance, type CityEventData, type BuildingType, type Building, type GameResult, type GameLogEntry, type BatterBoxScore, type PitcherBoxScore, type Position, type TrainingFocus, type HitterAttributes, type PitcherAttributes, type WorkEthic, type DistrictBonuses, type PlayoffBracket, type PlayoffSeries, type PlayoffGame, type PlayoffTeam, type PlayoffRound } from '@/lib/types';
 import type { Database } from '@/lib/types/database';
 
 type GameRow = Database['public']['Tables']['games']['Row'];
@@ -238,15 +269,29 @@ export async function getSavedGames() {
 export async function deleteGame(gameId: string): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient();
 
+  // Get authenticated user
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    console.error('Auth error in deleteGame:', authError);
+    return { success: false, error: 'You must be logged in to delete a game' };
+  }
+
   // Verify the game exists and belongs to the current user
   const { data: game, error: fetchError } = await supabase
     .from('games')
-    .select('id')
+    .select('id, user_id')
     .eq('id', gameId)
+    .eq('user_id', user.id)
     .single();
 
-  if (fetchError || !game) {
+  if (fetchError) {
+    console.error('Error fetching game for deletion:', fetchError);
     return { success: false, error: 'Game not found or access denied' };
+  }
+
+  if (!game) {
+    return { success: false, error: 'Game not found or you do not have permission to delete it' };
   }
 
   // Delete the game - Supabase will handle cascading deletes
@@ -255,12 +300,16 @@ export async function deleteGame(gameId: string): Promise<{ success: boolean; er
   const { error: deleteError } = await supabase
     .from('games')
     .delete()
-    .eq('id', gameId);
+    .eq('id', gameId)
+    .eq('user_id', user.id); // CRITICAL: Include user_id to ensure RLS compliance
 
   if (deleteError) {
     console.error('Error deleting game:', deleteError);
-    return { success: false, error: 'Failed to delete game' };
+    return { success: false, error: `Failed to delete game: ${deleteError.message}` };
   }
+
+  // Revalidate the homepage so the game list refreshes
+  revalidatePath('/');
 
   return { success: true };
 }
@@ -758,6 +807,489 @@ export async function simulateAIDraftPicks(gameId: string) {
 }
 
 // ============================================
+// SIMULATE DRAFT REMAINDER (SAFE)
+// ============================================
+
+export interface DraftSimulationResult {
+  success: boolean;
+  error?: string;
+  userPicks: { playerName: string; position: string; rating: number; potential: number }[];
+  skippedPicks: number;
+  undraftedCount: number;
+  finalRound: number;
+  totalPicksMade: number;
+}
+
+/**
+ * Safely simulates all remaining draft picks, including user picks.
+ * Handles roster capacity gracefully by skipping picks when full.
+ * Marks all undrafted players as free agents when complete.
+ */
+export async function simulateDraftRemainder(gameId: string): Promise<DraftSimulationResult> {
+  const supabase = await createClient();
+
+  const draft = await getDraftState(gameId);
+  if (!draft) {
+    return { success: false, error: 'No active draft found', userPicks: [], skippedPicks: 0, undraftedCount: 0, finalRound: 0, totalPicksMade: 0 };
+  }
+
+  if (draft.is_complete) {
+    return { success: false, error: 'Draft already complete', userPicks: [], skippedPicks: 0, undraftedCount: 0, finalRound: draft.total_rounds, totalPicksMade: 0 };
+  }
+
+  // Get facility level for roster capacity
+  const { data: franchise } = await supabase
+    .from('current_franchise')
+    .select('facility_level')
+    .eq('game_id', gameId)
+    .single();
+
+  const facilityLevel = ((franchise as { facility_level: FacilityLevel } | null)?.facility_level ?? 0) as FacilityLevel;
+  const capacities = getRosterCapacities(facilityLevel);
+  const totalCapacity = capacities.activeMax + capacities.reserveMax;
+
+  const userPicks: DraftSimulationResult['userPicks'] = [];
+  let skippedPicks = 0;
+  let totalPicksMade = 0;
+  let currentPick = draft.current_pick;
+  let currentRound = draft.current_round;
+
+  const getPickPositionInRound = (pickNum: number, roundNum: number): number => {
+    const posInRound = ((pickNum - 1) % 20) + 1;
+    if (roundNum % 2 === 0) {
+      return 21 - posInRound;
+    }
+    return posInRound;
+  };
+
+  // Process all remaining picks
+  while (currentRound <= draft.total_rounds) {
+    const posInRound = getPickPositionInRound(currentPick, currentRound);
+    const isUserPick = posInRound === draft.player_draft_position;
+
+    // Get current roster count
+    const { count: rosterCount } = await supabase
+      .from('players')
+      .select('*', { count: 'exact', head: true })
+      .eq('game_id', gameId)
+      .eq('is_on_roster', true);
+
+    const currentRosterSize = rosterCount || 0;
+
+    // Get best available prospect
+    const { data: prospects } = await supabase
+      .from('draft_prospects')
+      .select('*')
+      .eq('game_id', gameId)
+      .eq('draft_year', draft.year)
+      .eq('is_drafted', false)
+      .order('potential', { ascending: false })
+      .order('current_rating', { ascending: false })
+      .limit(10);
+
+    if (!prospects || prospects.length === 0) {
+      // No more prospects to draft
+      break;
+    }
+
+    const prospectData = (prospects as ProspectRow[])[0];
+
+    if (isUserPick) {
+      // User's pick - check roster capacity
+      if (currentRosterSize >= totalCapacity) {
+        // Roster full - skip this pick
+        console.log(`[simulateDraftRemainder] Skipping user pick #${currentPick} - roster full (${currentRosterSize}/${totalCapacity})`);
+        skippedPicks++;
+      } else {
+        // Draft the player for user
+        const rosterStatus: RosterStatus = currentRosterSize < capacities.activeMax ? 'ACTIVE' : 'RESERVE';
+
+        // Mark prospect as drafted
+        await supabase
+          .from('draft_prospects')
+          // @ts-expect-error - Supabase types not inferred without database connection
+          .update({
+            is_drafted: true,
+            drafted_by_team: 'player',
+          })
+          .eq('id', prospectData.id);
+
+        // Create player record
+        const { data: player } = await supabase
+          .from('players')
+          .insert({
+            game_id: gameId,
+            first_name: prospectData.first_name,
+            last_name: prospectData.last_name,
+            age: prospectData.age,
+            position: prospectData.position,
+            player_type: prospectData.player_type,
+            current_rating: prospectData.current_rating,
+            potential: prospectData.potential,
+            hitter_attributes: prospectData.hitter_attributes,
+            pitcher_attributes: prospectData.pitcher_attributes,
+            hidden_traits: prospectData.hidden_traits,
+            traits_revealed: false,
+            tier: 'LOW_A',
+            years_at_tier: 0,
+            salary: 10000,
+            contract_years: 3,
+            draft_year: draft.year,
+            draft_round: currentRound,
+            draft_pick: currentPick,
+            is_on_roster: true,
+            roster_status: rosterStatus,
+          } as any)
+          .select()
+          .single();
+
+        if (player) {
+          const playerData = player as PlayerRow;
+          // Record draft pick
+          await supabase.from('draft_picks').insert({
+            draft_id: draft.id,
+            game_id: gameId,
+            round: currentRound,
+            pick_number: currentPick,
+            pick_in_round: posInRound,
+            team_id: 'player',
+            player_id: playerData.id,
+          } as any);
+
+          userPicks.push({
+            playerName: `${prospectData.first_name} ${prospectData.last_name}`,
+            position: prospectData.position,
+            rating: prospectData.current_rating,
+            potential: prospectData.potential,
+          });
+          totalPicksMade++;
+        }
+      }
+    } else {
+      // AI team pick
+      const aiTeamIndex = posInRound <= draft.player_draft_position
+        ? posInRound - 1
+        : posInRound - 2;
+
+      if (aiTeamIndex >= 0 && aiTeamIndex < AI_TEAMS.length) {
+        const aiTeam = AI_TEAMS[aiTeamIndex];
+
+        // AI teams pick with some randomness from top 5
+        const pickIndex = Math.min(
+          Math.floor(Math.random() * 5),
+          (prospects as ProspectRow[]).length - 1
+        );
+        const aiProspect = (prospects as ProspectRow[])[pickIndex];
+
+        await supabase
+          .from('draft_prospects')
+          // @ts-expect-error - Supabase types not inferred without database connection
+          .update({
+            is_drafted: true,
+            drafted_by_team: aiTeam.id,
+          })
+          .eq('id', aiProspect.id);
+
+        // Record AI pick (no player record needed for AI teams)
+        await supabase.from('draft_picks').insert({
+          draft_id: draft.id,
+          game_id: gameId,
+          round: currentRound,
+          pick_number: currentPick,
+          pick_in_round: posInRound,
+          team_id: aiTeam.id,
+          player_id: null,
+        } as any);
+
+        totalPicksMade++;
+      }
+    }
+
+    // Advance to next pick
+    currentPick++;
+    currentRound = Math.ceil(currentPick / 20);
+  }
+
+  // Mark draft as complete
+  await supabase
+    .from('drafts')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      current_pick: currentPick,
+      current_round: draft.total_rounds,
+      is_complete: true,
+    })
+    .eq('id', draft.id);
+
+  // Handle undrafted players - mark as free agents
+  const { data: undrafted } = await supabase
+    .from('draft_prospects')
+    .select('id')
+    .eq('game_id', gameId)
+    .eq('draft_year', draft.year)
+    .eq('is_drafted', false);
+
+  const undraftedCount = undrafted?.length || 0;
+
+  // Update undrafted prospects to be available as free agents
+  if (undraftedCount > 0) {
+    await supabase
+      .from('draft_prospects')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({
+        is_free_agent: true,
+      })
+      .eq('game_id', gameId)
+      .eq('draft_year', draft.year)
+      .eq('is_drafted', false);
+  }
+
+  revalidatePath(`/game/${gameId}`);
+
+  return {
+    success: true,
+    userPicks,
+    skippedPicks,
+    undraftedCount,
+    finalRound: draft.total_rounds,
+    totalPicksMade,
+  };
+}
+
+// ============================================
+// OPTIMIZE ROSTER (AUTO-GM)
+// ============================================
+
+export interface RosterOptimizationResult {
+  success: boolean;
+  error?: string;
+  promotedCount: number;
+  demotedCount: number;
+  lineupSet: boolean;
+  rotationSet: boolean;
+}
+
+/**
+ * Auto-GM function that optimizes the roster after draft completion.
+ * - Promotes best 25 players to ACTIVE roster
+ * - Sets optimal batting lineup by position
+ * - Sets pitching rotation and closer
+ */
+export async function optimizeRoster(gameId: string): Promise<RosterOptimizationResult> {
+  const supabase = await createClient();
+
+  // Get all rostered players
+  const { data: players, error } = await supabase
+    .from('players')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true)
+    .order('current_rating', { ascending: false });
+
+  if (error || !players) {
+    return { success: false, error: 'Failed to load roster', promotedCount: 0, demotedCount: 0, lineupSet: false, rotationSet: false };
+  }
+
+  const allPlayers = players as PlayerRow[];
+
+  if (allPlayers.length === 0) {
+    return { success: true, promotedCount: 0, demotedCount: 0, lineupSet: false, rotationSet: false };
+  }
+
+  // Separate by type
+  const pitchers = allPlayers.filter(p => p.player_type === 'PITCHER');
+  const hitters = allPlayers.filter(p => p.player_type === 'HITTER');
+
+  // Sort each by rating
+  pitchers.sort((a, b) => b.current_rating - a.current_rating);
+  hitters.sort((a, b) => b.current_rating - a.current_rating);
+
+  // Target: 12 pitchers, 13 position players for 25-man active roster
+  const activePitchers = pitchers.slice(0, Math.min(12, pitchers.length));
+  const activeHitters = hitters.slice(0, Math.min(13, hitters.length));
+
+  // Fill remaining active slots if one group is short
+  const activeCount = activePitchers.length + activeHitters.length;
+  let additionalFromPitchers: PlayerRow[] = [];
+  let additionalFromHitters: PlayerRow[] = [];
+
+  if (activeCount < 25) {
+    const remaining = 25 - activeCount;
+    if (activePitchers.length < 12) {
+      // Need more hitters
+      additionalFromHitters = hitters.slice(13, 13 + remaining);
+    } else if (activeHitters.length < 13) {
+      // Need more pitchers
+      additionalFromPitchers = pitchers.slice(12, 12 + remaining);
+    }
+  }
+
+  const activePlayerIds = new Set([
+    ...activePitchers.map(p => p.id),
+    ...activeHitters.map(p => p.id),
+    ...additionalFromPitchers.map(p => p.id),
+    ...additionalFromHitters.map(p => p.id),
+  ]);
+
+  let promotedCount = 0;
+  let demotedCount = 0;
+
+  // Update roster statuses
+  for (const player of allPlayers) {
+    const shouldBeActive = activePlayerIds.has(player.id);
+    const currentlyActive = player.roster_status === 'ACTIVE';
+
+    if (shouldBeActive && !currentlyActive) {
+      await supabase
+        .from('players')
+        // @ts-expect-error - Supabase types not inferred without database connection
+        .update({ roster_status: 'ACTIVE' })
+        .eq('id', player.id);
+      promotedCount++;
+    } else if (!shouldBeActive && currentlyActive) {
+      await supabase
+        .from('players')
+        // @ts-expect-error - Supabase types not inferred without database connection
+        .update({ roster_status: 'RESERVE' })
+        .eq('id', player.id);
+      demotedCount++;
+    }
+  }
+
+  // Build optimal lineup - this is stored in a lineup metadata field or separate table
+  // For now, we'll just ensure players are correctly rostered
+  // The actual lineup would be calculated at game time based on ratings
+
+  // Set pitching rotation (top 5 SPs) - could store this as JSON in franchise
+  const starters = activePitchers.filter(p => p.position === 'SP').slice(0, 5);
+  const relievers = activePitchers.filter(p => p.position === 'RP');
+  const closer = relievers.length > 0 ? relievers[0] : null; // Best RP is closer
+
+  // Store rotation/lineup in franchise metadata (if we had that field)
+  // For now, we'll create a game event to announce the roster optimization
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: 1,
+    type: 'roster',
+    title: 'Roster Optimized',
+    description: `The coaching staff has set the lineup and rotation. ${promotedCount > 0 ? `${promotedCount} player(s) promoted to active roster. ` : ''}${demotedCount > 0 ? `${demotedCount} player(s) sent to reserves. ` : ''}${starters.length} starters and ${relievers.length} relievers ready for the season.`,
+    is_read: false,
+  } as any);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return {
+    success: true,
+    promotedCount,
+    demotedCount,
+    lineupSet: activeHitters.length > 0,
+    rotationSet: starters.length > 0,
+  };
+}
+
+// ============================================
+// COMPLETE DRAFT AND TRANSITION
+// ============================================
+
+export interface DraftCompletionResult {
+  success: boolean;
+  error?: string;
+  draftResults: DraftSimulationResult;
+  rosterResults: RosterOptimizationResult;
+}
+
+/**
+ * Complete the draft and transition to season phase.
+ * This is the main entry point for the "Sim to End & Start Season" button.
+ */
+export async function completeDraftAndTransition(gameId: string): Promise<DraftCompletionResult> {
+  const supabase = await createClient();
+
+  // Step 1: Simulate all remaining draft picks
+  const draftResults = await simulateDraftRemainder(gameId);
+
+  if (!draftResults.success) {
+    return {
+      success: false,
+      error: draftResults.error,
+      draftResults,
+      rosterResults: { success: false, promotedCount: 0, demotedCount: 0, lineupSet: false, rotationSet: false },
+    };
+  }
+
+  // Step 2: Optimize the roster
+  const rosterResults = await optimizeRoster(gameId);
+
+  // Step 3: Transition to season phase
+  const { error: phaseError } = await supabase
+    .from('games')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      current_phase: 'season',
+    })
+    .eq('id', gameId);
+
+  if (phaseError) {
+    return {
+      success: false,
+      error: 'Failed to transition to season phase',
+      draftResults,
+      rosterResults,
+    };
+  }
+
+  // Create a season record if it doesn't exist
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_year, current_tier')
+    .eq('id', gameId)
+    .single();
+
+  if (game) {
+    const gameData = game as Pick<GameRow, 'current_year' | 'current_tier'>;
+    const tierConfig = TIER_CONFIGS[gameData.current_tier as Tier];
+
+    // Check if season exists
+    const { data: existingSeason } = await supabase
+      .from('seasons')
+      .select('id')
+      .eq('game_id', gameId)
+      .eq('year', gameData.current_year)
+      .single();
+
+    if (!existingSeason) {
+      await supabase.from('seasons').insert({
+        game_id: gameId,
+        year: gameData.current_year,
+        wins: 0,
+        losses: 0,
+        games_played: 0,
+        total_games: tierConfig.seasonLength,
+        tier: gameData.current_tier,
+      } as any);
+    }
+  }
+
+  // Create announcement event
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: 1,
+    type: 'season',
+    title: 'Opening Day!',
+    description: `The draft is complete and the season is about to begin! ${draftResults.userPicks.length} new players have joined the team. Play ball!`,
+    is_read: false,
+  } as any);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return {
+    success: true,
+    draftResults,
+    rosterResults,
+  };
+}
+
+// ============================================
 // ADVANCE GAME PHASE
 // ============================================
 
@@ -1206,15 +1738,24 @@ export async function simulateSeasonBatch(
     ? roster.reduce((sum, p) => sum + p.current_rating, 0) / roster.length
     : 40;
 
-  // Simulate games
+  // Simulate games with detailed box scores
   const events: SeasonEvent[] = [];
   const newsStoriesToAdd: Omit<NewsStory, 'id'>[] = [];
-  let batchWins = 0;
-  let batchLosses = 0;
-  let batchHomeGames = 0;
-  let batchAttendance = 0;
   let currentWinStreak = 0;
   let currentLossStreak = 0;
+
+  // Map roster to box score format
+  const rosterForSim = roster.map(p => ({
+    id: p.id,
+    firstName: p.first_name,
+    lastName: p.last_name,
+    position: p.position as Position,
+    playerType: p.player_type as 'HITTER' | 'PITCHER',
+    currentRating: p.current_rating,
+  }));
+
+  // Generate opponent strength (varies by tier)
+  const opponentBase = tierConfig.averageOpponentStrength || 50;
 
   // Headline context for news generation
   const headlineContext: HeadlineContext = {
@@ -1224,122 +1765,255 @@ export async function simulateSeasonBatch(
     currentLosses: seasonData.losses || 0,
   };
 
-  for (let i = 0; i < actualGamesToSim; i++) {
-    const gameNum = (seasonData.games_played || 0) + i + 1;
-    const isHome = Math.random() < 0.5;
+  // Simulate games with full box scores
+  const batchResults = simulateGameBatch(
+    rosterForSim,
+    avgRating,
+    opponentBase,
+    franchiseData.stadium_capacity,
+    cityData.team_pride,
+    actualGamesToSim,
+    (seasonData.games_played || 0) + 1,
+    gameData.team_name,
+    gameData.current_year
+  );
 
-    // Generate opponent strength (varies by tier)
-    const opponentBase = tierConfig.averageOpponentStrength || 50;
-    const opponentStrength = opponentBase + (Math.random() * 20 - 10);
+  const batchWins = batchResults.totalWins;
+  const batchLosses = batchResults.totalLosses;
+  const batchHomeGames = batchResults.homeGames;
+  const batchAttendance = batchResults.totalAttendance;
 
-    // Calculate win probability
-    const strengthDiff = avgRating - opponentStrength;
-    const homeBonus = isHome ? 5 : 0;
-    const winProb = 0.5 + (strengthDiff + homeBonus) / 100;
-    const clampedProb = Math.max(0.2, Math.min(0.8, winProb));
+  // Store game results and generate events
+  const gameResultsToInsert: Array<{
+    game_id: string;
+    season_id: string;
+    year: number;
+    game_number: number;
+    player_team_name: string;
+    opponent_name: string;
+    is_home: boolean;
+    player_runs: number;
+    opponent_runs: number;
+    is_win: boolean;
+    player_line_score: number[];
+    opponent_line_score: number[];
+    player_hits: number;
+    player_errors: number;
+    opponent_hits: number;
+    opponent_errors: number;
+    batting_stats: BatterBoxScore[];
+    pitching_stats: PitcherBoxScore[];
+    attendance: number;
+    game_duration_minutes: number;
+  }> = [];
 
-    const isWin = Math.random() < clampedProb;
+  for (const game of batchResults.games) {
+    const { gameNumber, opponent, isHome, result } = game;
 
-    // Generate runs for the game (for headlines)
-    const runsScored = Math.floor(Math.random() * 10) + (isWin ? 2 : 0);
-    const runsAllowed = Math.floor(Math.random() * 8) + (isWin ? 0 : 2);
-
-    if (isWin) {
-      batchWins++;
+    // Track streaks
+    if (result.isWin) {
       currentWinStreak++;
       currentLossStreak = 0;
       events.push({
-        game: gameNum,
+        game: gameNumber,
         type: 'win',
-        description: `Game ${gameNum}: Victory! (${isHome ? 'Home' : 'Away'})`,
+        description: `Game ${gameNumber}: ${result.playerRuns}-${result.opponentRuns} vs ${opponent.city} ${opponent.name} (${isHome ? 'Home' : 'Away'})`,
       });
     } else {
-      batchLosses++;
       currentLossStreak++;
       currentWinStreak = 0;
       events.push({
-        game: gameNum,
+        game: gameNumber,
         type: 'loss',
-        description: `Game ${gameNum}: Loss (${isHome ? 'Home' : 'Away'})`,
+        description: `Game ${gameNumber}: ${result.playerRuns}-${result.opponentRuns} vs ${opponent.city} ${opponent.name} (${isHome ? 'Home' : 'Away'})`,
       });
     }
 
-    // Generate player performances for special moments
+    // Store game result for batch insert
+    gameResultsToInsert.push({
+      game_id: gameId,
+      season_id: seasonData.id,
+      year: gameData.current_year,
+      game_number: gameNumber,
+      player_team_name: gameData.team_name,
+      opponent_name: `${opponent.city} ${opponent.name}`,
+      is_home: isHome,
+      player_runs: result.playerRuns,
+      opponent_runs: result.opponentRuns,
+      is_win: result.isWin,
+      player_line_score: result.playerLineScore,
+      opponent_line_score: result.opponentLineScore,
+      player_hits: result.playerHits,
+      player_errors: result.playerErrors,
+      opponent_hits: result.opponentHits,
+      opponent_errors: result.opponentErrors,
+      batting_stats: result.battingStats,
+      pitching_stats: result.pitchingStats,
+      attendance: result.attendance,
+      game_duration_minutes: result.gameDurationMinutes,
+    });
+
+    // Generate player performances for headlines from box score
     const playerPerformances: PlayerGamePerformance[] = [];
 
-    // Check for standout player performance (10% chance per game)
-    if (Math.random() < 0.10 && roster.length > 0) {
-      const standoutPlayer = roster[Math.floor(Math.random() * roster.length)];
+    // Find standout hitter performances
+    for (const batter of result.battingStats) {
+      if (batter.hr >= 2 || (batter.h >= 3 && batter.rbi >= 3)) {
+        playerPerformances.push({
+          playerId: batter.playerId,
+          playerName: batter.name,
+          playerType: 'HITTER',
+          homeRuns: batter.hr,
+          hits: batter.h,
+          rbi: batter.rbi,
+        });
+      }
+    }
 
-      if (standoutPlayer.player_type === 'HITTER') {
-        // Chance for multi-HR game
-        const homeRuns = Math.random() < 0.3 ? 2 : (Math.random() < 0.5 ? 1 : 0);
-        if (homeRuns >= 2) {
-          playerPerformances.push({
-            playerId: standoutPlayer.id,
-            playerName: `${standoutPlayer.first_name} ${standoutPlayer.last_name}`,
-            playerType: 'HITTER',
-            homeRuns,
-            hits: homeRuns + Math.floor(Math.random() * 2),
-            rbi: homeRuns * 2,
-          });
-        }
-      } else {
-        // Chance for high-K game
-        const strikeouts = Math.floor(Math.random() * 5) + 8;
-        if (strikeouts >= 10) {
-          playerPerformances.push({
-            playerId: standoutPlayer.id,
-            playerName: `${standoutPlayer.first_name} ${standoutPlayer.last_name}`,
-            playerType: 'PITCHER',
-            pitcherStrikeouts: strikeouts,
-            inningsPitched: 7,
-            earnedRuns: isWin ? Math.floor(Math.random() * 3) : Math.floor(Math.random() * 5) + 1,
-          });
-        }
+    // Find standout pitcher performances
+    for (const pitcher of result.pitchingStats) {
+      if (pitcher.so >= 10 || (pitcher.ip >= 7 && pitcher.er <= 1)) {
+        playerPerformances.push({
+          playerId: pitcher.playerId,
+          playerName: pitcher.name,
+          playerType: 'PITCHER',
+          pitcherStrikeouts: pitcher.so,
+          inningsPitched: pitcher.ip,
+          earnedRuns: pitcher.er,
+          isWin: pitcher.isWin,
+        });
       }
     }
 
     // Generate news headlines for notable games
+    const runDiff = Math.abs(result.playerRuns - result.opponentRuns);
     const shouldGenerateNews =
       currentWinStreak >= 3 ||
       currentLossStreak >= 3 ||
       playerPerformances.length > 0 ||
-      (gameNum % 10 === 0) || // Every 10th game
-      (runsScored - runsAllowed >= 5 || runsAllowed - runsScored >= 5); // Blowouts
+      (gameNumber % 10 === 0) ||
+      runDiff >= 5;
 
     if (shouldGenerateNews) {
-      const gameResult: GameResultData = {
-        gameNumber: gameNum,
-        isWin,
+      const gameResultData: GameResultData = {
+        gameNumber,
+        isWin: result.isWin,
         isHome,
-        runsScored,
-        runsAllowed,
+        runsScored: result.playerRuns,
+        runsAllowed: result.opponentRuns,
         winStreak: currentWinStreak,
         lossStreak: currentLossStreak,
         playerPerformances,
       };
 
-      // Update context with current record
       headlineContext.currentWins = (seasonData.wins || 0) + batchWins;
       headlineContext.currentLosses = (seasonData.losses || 0) + batchLosses;
 
-      const headlines = generateGameHeadlines(gameResult, headlineContext);
+      const headlines = generateGameHeadlines(gameResultData, headlineContext);
       newsStoriesToAdd.push(...headlines);
     }
+  }
 
-    if (isHome) {
-      batchHomeGames++;
-      // Calculate attendance for home games (inline calculation)
-      const baseAttendance = franchiseData.stadium_capacity * 0.4;
-      const prideMultiplier = 0.7 + (cityData.team_pride / 100) * 0.8;
-      const winBonus = 1 + ((seasonData.wins || 0) + batchWins) / 100;
-      const attendance = Math.min(
-        Math.round(baseAttendance * prideMultiplier * winBonus),
-        franchiseData.stadium_capacity
-      );
-      batchAttendance += attendance;
+  // Batch insert game results
+  if (gameResultsToInsert.length > 0) {
+    const { error: gameResultsError } = await supabase
+      .from('game_results')
+      // @ts-expect-error - game_results table may not exist yet in types
+      .insert(gameResultsToInsert);
+
+    if (gameResultsError) {
+      console.error('Error inserting game results:', gameResultsError);
+      // Continue even if this fails - don't block season progression
     }
+  }
+
+  // Note: Attendance is now calculated in the box score simulation
+
+  // Process player training for games simulated
+  // Calculate district bonuses from buildings
+  const buildings = cityData.buildings
+    ? (typeof cityData.buildings === 'string'
+        ? JSON.parse(cityData.buildings)
+        : cityData.buildings) as Building[]
+    : [];
+  const districtBonuses: DistrictBonuses = buildings.length > 0
+    ? calculateCityBonuses(buildings)
+    : DEFAULT_DISTRICT_BONUSES;
+
+  // Map players for training
+  const playersForTraining = roster.map(p => ({
+    id: p.id,
+    age: p.age,
+    potential: p.potential,
+    currentRating: p.current_rating,
+    playerType: p.player_type as 'HITTER' | 'PITCHER',
+    trainingFocus: (p.training_focus || 'overall') as TrainingFocus,
+    currentXp: p.current_xp || 0,
+    progressionRate: p.progression_rate || 1.0,
+    morale: p.morale,
+    isInjured: p.is_injured,
+    rosterStatus: (p.roster_status || 'ACTIVE') as 'ACTIVE' | 'RESERVE',
+    hitterAttributes: p.hitter_attributes as HitterAttributes | null,
+    pitcherAttributes: p.pitcher_attributes as PitcherAttributes | null,
+    hiddenTraits: {
+      workEthic: ((p.hidden_traits as { workEthic?: WorkEthic })?.workEthic || 'average') as WorkEthic,
+    },
+  }));
+
+  const trainingResults = processBatchTraining(
+    playersForTraining,
+    districtBonuses,
+    (franchiseData.facility_level || 0) as FacilityLevel,
+    actualGamesToSim
+  );
+
+  // Update players with training results
+  for (const result of trainingResults.trainedPlayers) {
+    const playerUpdate: Record<string, unknown> = {
+      current_xp: result.newXp,
+    };
+
+    // If player leveled up, update the attribute
+    if (result.leveledUp && result.attributeImproved && result.newRating !== undefined) {
+      const player = roster.find(p => p.id === result.playerId);
+      if (player) {
+        if (player.player_type === 'HITTER' && player.hitter_attributes) {
+          const rawAttrs = typeof player.hitter_attributes === 'string'
+            ? JSON.parse(player.hitter_attributes)
+            : player.hitter_attributes;
+          const attrs = rawAttrs as HitterAttributes;
+          playerUpdate.hitter_attributes = {
+            ...attrs,
+            [result.attributeImproved]: result.newRating,
+          };
+          // Update overall rating as average of attributes
+          const newAttrs = playerUpdate.hitter_attributes as HitterAttributes;
+          playerUpdate.current_rating = Math.round(
+            (newAttrs.hit + newAttrs.power + newAttrs.speed + newAttrs.arm + newAttrs.field) / 5
+          );
+        } else if (player.player_type === 'PITCHER' && player.pitcher_attributes) {
+          const rawAttrs = typeof player.pitcher_attributes === 'string'
+            ? JSON.parse(player.pitcher_attributes)
+            : player.pitcher_attributes;
+          const attrs = rawAttrs as PitcherAttributes;
+          playerUpdate.pitcher_attributes = {
+            ...attrs,
+            [result.attributeImproved]: result.newRating,
+          };
+          // Update overall rating as average of attributes
+          const newAttrs = playerUpdate.pitcher_attributes as PitcherAttributes;
+          playerUpdate.current_rating = Math.round(
+            (newAttrs.stuff + newAttrs.control + newAttrs.movement) / 3
+          );
+        }
+      }
+    }
+
+    await supabase
+      .from('players')
+      // @ts-expect-error - training fields may not exist in types
+      .update(playerUpdate)
+      .eq('id', result.playerId);
   }
 
   // Update season record
@@ -1390,7 +2064,386 @@ export async function simulateSeasonBatch(
     events,
     totalGames,
     newsGenerated: newsStoriesToAdd.length,
+    training: {
+      totalXpGained: trainingResults.totalXpGained,
+      playersLeveledUp: trainingResults.playersLeveledUp,
+    },
   };
+}
+
+// ============================================
+// PLAYER TRAINING FUNCTIONS
+// ============================================
+
+/**
+ * Set a player's training focus
+ */
+export async function setPlayerTrainingFocus(
+  gameId: string,
+  playerId: string,
+  trainingFocus: TrainingFocus
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+
+  try {
+    // Verify player belongs to game
+    const { data: playerData, error: playerError } = await supabase
+      .from('players')
+      .select('id, player_type')
+      .eq('id', playerId)
+      .eq('game_id', gameId)
+      .single();
+
+    if (playerError) {
+      return { success: false, error: 'Player not found' };
+    }
+
+    if (!playerData) {
+      return { success: false, error: 'Player not found' };
+    }
+
+    const playerType = (playerData as { player_type: 'HITTER' | 'PITCHER' }).player_type;
+
+    // Validate training focus matches player type
+    const validHitterFocuses = ['hit', 'power', 'speed', 'arm', 'field', 'overall'];
+    const validPitcherFocuses = ['stuff', 'control', 'movement', 'overall'];
+
+    if (playerType === 'HITTER' && !validHitterFocuses.includes(trainingFocus)) {
+      return { success: false, error: 'Invalid training focus for hitter' };
+    }
+    if (playerType === 'PITCHER' && !validPitcherFocuses.includes(trainingFocus)) {
+      return { success: false, error: 'Invalid training focus for pitcher' };
+    }
+
+    // Update training focus
+    const { error: updateError } = await supabase
+      .from('players')
+      // @ts-expect-error - training_focus may not exist in types
+      .update({ training_focus: trainingFocus })
+      .eq('id', playerId);
+
+    if (updateError) {
+      return { success: false, error: 'Failed to update training focus' };
+    }
+
+    revalidatePath(`/game/${gameId}`);
+    return { success: true };
+  } catch (error) {
+    console.error('Error setting training focus:', error);
+    return { success: false, error: 'Failed to set training focus' };
+  }
+}
+
+/**
+ * Set training focus for multiple players at once
+ */
+export async function setBatchTrainingFocus(
+  gameId: string,
+  playerFocuses: Array<{ playerId: string; trainingFocus: TrainingFocus }>
+): Promise<{ success: boolean; updated: number; error?: string }> {
+  const supabase = await createClient();
+
+  let updated = 0;
+
+  try {
+    for (const { playerId, trainingFocus } of playerFocuses) {
+      const result = await setPlayerTrainingFocus(gameId, playerId, trainingFocus);
+      if (result.success) updated++;
+    }
+
+    revalidatePath(`/game/${gameId}`);
+    return { success: true, updated };
+  } catch (error) {
+    console.error('Error in batch training focus update:', error);
+    return { success: false, updated, error: 'Failed to update some players' };
+  }
+}
+
+/**
+ * Get training summary for the roster
+ */
+export async function getTrainingSummary(gameId: string): Promise<{
+  success: boolean;
+  summary?: {
+    trainingMult: number;
+    facilityBonus: number;
+    totalBonus: number;
+    avgProgressionRate: number;
+    estimatedXpPerGame: number;
+    estimatedGamesToLevelUp: number;
+    playerBreakdown: Array<{
+      playerId: string;
+      playerName: string;
+      trainingFocus: TrainingFocus;
+      currentXp: number;
+      progressionRate: number;
+      estimatedGamesToNextLevel: number;
+    }>;
+  };
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  try {
+    // Get roster
+    const { data: players } = await supabase
+      .from('players')
+      .select('*')
+      .eq('game_id', gameId)
+      .eq('is_on_roster', true);
+
+    // Get city data for buildings
+    const { data: city } = await supabase
+      .from('city_states')
+      .select('buildings')
+      .eq('game_id', gameId)
+      .single();
+
+    // Get franchise for facility level
+    const { data: franchise } = await supabase
+      .from('current_franchise')
+      .select('facility_level')
+      .eq('game_id', gameId)
+      .single();
+
+    if (!players) {
+      return { success: false, error: 'Missing player data' };
+    }
+    if (!city) {
+      return { success: false, error: 'Missing city data' };
+    }
+    if (!franchise) {
+      return { success: false, error: 'Missing franchise data' };
+    }
+
+    // Calculate district bonuses from buildings
+    const cityData = city as { buildings: unknown };
+    const buildings = cityData.buildings
+      ? (typeof cityData.buildings === 'string'
+          ? JSON.parse(cityData.buildings as string)
+          : cityData.buildings) as Building[]
+      : [];
+    const districtBonuses: DistrictBonuses = buildings.length > 0
+      ? calculateCityBonuses(buildings)
+      : DEFAULT_DISTRICT_BONUSES;
+
+    const franchiseData = franchise as { facility_level: number };
+    const facilityLevel = (franchiseData.facility_level || 0) as FacilityLevel;
+    const trainingMult = districtBonuses.trainingMult;
+    const facilityBonus = FACILITY_CONFIGS[facilityLevel] ? 1 + facilityLevel * 0.15 : 1.0;
+    const totalBonus = trainingMult * facilityBonus;
+
+    // Cast players to proper type
+    const playerList = players as Array<{
+      id: string;
+      first_name: string;
+      last_name: string;
+      training_focus: string;
+      current_xp: number;
+      progression_rate: number;
+    }>;
+
+    // Calculate player breakdown
+    const playerBreakdown = playerList.map(p => {
+      const progressionRate = p.progression_rate || 1.0;
+      const currentXp = p.current_xp || 0;
+      const xpNeeded = 100 - currentXp;
+      const estimatedXpPerGame = 2 * progressionRate * totalBonus;
+      const estimatedGamesToNextLevel = estimatedXpPerGame > 0
+        ? Math.ceil(xpNeeded / estimatedXpPerGame)
+        : 999;
+
+      return {
+        playerId: p.id,
+        playerName: `${p.first_name} ${p.last_name}`,
+        trainingFocus: (p.training_focus || 'overall') as TrainingFocus,
+        currentXp,
+        progressionRate,
+        estimatedGamesToNextLevel,
+      };
+    });
+
+    // Calculate averages
+    const avgProgressionRate = playerList.length > 0
+      ? playerList.reduce((sum, p) => sum + (p.progression_rate || 1.0), 0) / playerList.length
+      : 1.0;
+
+    const estimatedXpPerGame = Math.round(2 * avgProgressionRate * totalBonus);
+    const estimatedGamesToLevelUp = estimatedXpPerGame > 0
+      ? Math.ceil(100 / estimatedXpPerGame)
+      : 999;
+
+    return {
+      success: true,
+      summary: {
+        trainingMult,
+        facilityBonus,
+        totalBonus,
+        avgProgressionRate,
+        estimatedXpPerGame,
+        estimatedGamesToLevelUp,
+        playerBreakdown,
+      },
+    };
+  } catch (error) {
+    console.error('Error getting training summary:', error);
+    return { success: false, error: 'Failed to get training summary' };
+  }
+}
+
+// ============================================
+// GAME LOG & BOX SCORE FUNCTIONS
+// ============================================
+
+/**
+ * Get the game log for a specific season
+ * Returns a list of games with basic info (for the schedule view)
+ */
+export async function getGameLog(
+  gameId: string,
+  year: number,
+  limit: number = 50,
+  offset: number = 0
+): Promise<{ success: boolean; games?: GameLogEntry[]; total?: number; error?: string }> {
+  const supabase = await createClient();
+
+  try {
+    // Get total count
+    const { count } = await supabase
+      .from('game_results')
+      .select('*', { count: 'exact', head: true })
+      .eq('game_id', gameId)
+      .eq('year', year);
+
+    // Get games
+    const { data, error } = await supabase
+      .from('game_results')
+      .select('id, game_number, is_home, opponent_name, player_runs, opponent_runs, is_win, player_hits, player_errors, opponent_hits, opponent_errors, attendance, created_at')
+      .eq('game_id', gameId)
+      .eq('year', year)
+      .order('game_number', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) throw error;
+
+    const games: GameLogEntry[] = (data || []).map((row: {
+      id: string;
+      game_number: number;
+      is_home: boolean;
+      opponent_name: string;
+      player_runs: number;
+      opponent_runs: number;
+      is_win: boolean;
+      player_hits: number;
+      player_errors: number;
+      opponent_hits: number;
+      opponent_errors: number;
+      attendance: number;
+      created_at: string;
+    }) => ({
+      id: row.id,
+      gameNumber: row.game_number,
+      isHome: row.is_home,
+      opponentName: row.opponent_name,
+      playerRuns: row.player_runs,
+      opponentRuns: row.opponent_runs,
+      isWin: row.is_win,
+      playerHits: row.player_hits,
+      playerErrors: row.player_errors,
+      opponentHits: row.opponent_hits,
+      opponentErrors: row.opponent_errors,
+      attendance: row.attendance,
+      createdAt: new Date(row.created_at),
+    }));
+
+    return {
+      success: true,
+      games,
+      total: count || 0,
+    };
+  } catch (error) {
+    console.error('Error fetching game log:', error);
+    return { success: false, error: 'Failed to fetch game log' };
+  }
+}
+
+/**
+ * Get a single game's full box score
+ */
+export async function getBoxScore(
+  gameId: string,
+  gameResultId: string
+): Promise<{ success: boolean; boxScore?: GameResult; error?: string }> {
+  const supabase = await createClient();
+
+  try {
+    const { data, error } = await supabase
+      .from('game_results')
+      .select('*')
+      .eq('game_id', gameId)
+      .eq('id', gameResultId)
+      .single();
+
+    if (error) throw error;
+    if (!data) return { success: false, error: 'Game not found' };
+
+    const row = data as {
+      id: string;
+      game_id: string;
+      season_id: string;
+      year: number;
+      game_number: number;
+      player_team_name: string;
+      opponent_name: string;
+      is_home: boolean;
+      player_runs: number;
+      opponent_runs: number;
+      is_win: boolean;
+      player_line_score: number[];
+      opponent_line_score: number[];
+      player_hits: number;
+      player_errors: number;
+      opponent_hits: number;
+      opponent_errors: number;
+      batting_stats: BatterBoxScore[];
+      pitching_stats: PitcherBoxScore[];
+      attendance: number;
+      game_duration_minutes: number | null;
+      weather: string | null;
+      created_at: string;
+    };
+
+    const boxScore: GameResult = {
+      id: row.id,
+      gameId: row.game_id,
+      seasonId: row.season_id,
+      year: row.year,
+      gameNumber: row.game_number,
+      playerTeamName: row.player_team_name,
+      opponentName: row.opponent_name,
+      isHome: row.is_home,
+      playerRuns: row.player_runs,
+      opponentRuns: row.opponent_runs,
+      isWin: row.is_win,
+      playerLineScore: row.player_line_score || [],
+      opponentLineScore: row.opponent_line_score || [],
+      playerHits: row.player_hits,
+      playerErrors: row.player_errors,
+      opponentHits: row.opponent_hits,
+      opponentErrors: row.opponent_errors,
+      battingStats: row.batting_stats || [],
+      pitchingStats: row.pitching_stats || [],
+      attendance: row.attendance,
+      gameDurationMinutes: row.game_duration_minutes || undefined,
+      weather: row.weather || undefined,
+      createdAt: new Date(row.created_at),
+    };
+
+    return { success: true, boxScore };
+  } catch (error) {
+    console.error('Error fetching box score:', error);
+    return { success: false, error: 'Failed to fetch box score' };
+  }
 }
 
 // Complete the season and calculate final results
@@ -2635,4 +3688,2312 @@ export async function getCityState(gameId: string): Promise<{
     teamPride: typedData.team_pride,
     occupancyRate: typedData.occupancy_rate,
   };
+}
+
+// ============================================
+// CONTRACT & FREE AGENCY SYSTEM
+// ============================================
+
+/**
+ * Get team payroll summary
+ */
+export async function getPayrollSummary(gameId: string): Promise<PayrollSummary | null> {
+  const supabase = await createClient();
+
+  // Get current tier
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_tier')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) return null;
+
+  const gameData = game as Pick<GameRow, 'current_tier'>;
+
+  // Get all rostered players
+  const { data: players } = await supabase
+    .from('players')
+    .select('id, first_name, last_name, salary, roster_status')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true);
+
+  if (!players) return null;
+
+  const roster = (players as PlayerRow[]).map(p => ({
+    id: p.id,
+    firstName: p.first_name,
+    lastName: p.last_name,
+    salary: p.salary,
+    rosterStatus: p.roster_status as RosterStatus,
+  }));
+
+  return calculatePayroll(roster, gameData.current_tier as Tier);
+}
+
+/**
+ * Get players with expiring contracts (contractYears <= 1)
+ */
+export async function getExpiringContracts(gameId: string): Promise<Array<{
+  id: string;
+  name: string;
+  position: string;
+  rating: number;
+  age: number;
+  morale: number;
+  salary: number;
+  contractYears: number;
+}>> {
+  const supabase = await createClient();
+
+  const { data: players, error } = await supabase
+    .from('players')
+    .select('id, first_name, last_name, position, current_rating, age, morale, salary, contract_years')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true)
+    .lte('contract_years', 1)
+    .order('current_rating', { ascending: false });
+
+  if (error || !players) {
+    console.error('Error fetching expiring contracts:', error);
+    return [];
+  }
+
+  return (players as PlayerRow[]).map(p => ({
+    id: p.id,
+    name: `${p.first_name} ${p.last_name}`,
+    position: p.position,
+    rating: p.current_rating,
+    age: p.age,
+    morale: p.morale,
+    salary: p.salary,
+    contractYears: p.contract_years,
+  }));
+}
+
+/**
+ * Generate a contract offer for a player
+ */
+export async function generatePlayerContractOffer(
+  gameId: string,
+  playerId: string
+): Promise<{ success: boolean; error?: string; offer?: ContractOffer }> {
+  const supabase = await createClient();
+
+  // Get player data
+  const { data: player } = await supabase
+    .from('players')
+    .select('current_rating, potential, tier, age')
+    .eq('id', playerId)
+    .eq('game_id', gameId)
+    .single();
+
+  if (!player) {
+    return { success: false, error: 'Player not found' };
+  }
+
+  const playerData = player as Pick<PlayerRow, 'current_rating' | 'potential' | 'tier' | 'age'>;
+
+  const offer = generateContractOffer({
+    currentRating: playerData.current_rating,
+    potential: playerData.potential,
+    tier: playerData.tier as Tier,
+    age: playerData.age,
+  }, true);
+
+  return { success: true, offer };
+}
+
+/**
+ * Extend/renew a player's contract
+ */
+export async function extendPlayerContract(
+  gameId: string,
+  playerId: string,
+  customOffer?: { salary: number; years: number }
+): Promise<{
+  success: boolean;
+  error?: string;
+  newSalary?: number;
+  newYears?: number;
+  accepted?: boolean;
+}> {
+  const supabase = await createClient();
+
+  // Get player data
+  const { data: player } = await supabase
+    .from('players')
+    .select('*')
+    .eq('id', playerId)
+    .eq('game_id', gameId)
+    .single();
+
+  if (!player) {
+    return { success: false, error: 'Player not found' };
+  }
+
+  const playerData = player as PlayerRow;
+
+  // Get team tier for salary cap check
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_tier')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, error: 'Game not found' };
+  }
+
+  const tier = (game as Pick<GameRow, 'current_tier'>).current_tier as Tier;
+  const tierConfig = TIER_CONFIGS[tier];
+
+  // Get current payroll
+  const payroll = await getPayrollSummary(gameId);
+  if (!payroll) {
+    return { success: false, error: 'Could not calculate payroll' };
+  }
+
+  // Generate or use custom offer
+  let offer: ContractOffer;
+  if (customOffer) {
+    offer = {
+      salary: customOffer.salary,
+      years: customOffer.years,
+      totalValue: customOffer.salary * customOffer.years,
+      isQualifyingOffer: true,
+    };
+  } else {
+    offer = generateContractOffer({
+      currentRating: playerData.current_rating,
+      potential: playerData.potential,
+      tier,
+      age: playerData.age,
+    }, true);
+  }
+
+  // Check salary cap (excluding current player's salary)
+  const payrollWithoutPlayer = payroll.totalPayroll - playerData.salary;
+  if (!canAffordSalary(payrollWithoutPlayer, offer.salary, tierConfig.salaryCap)) {
+    return {
+      success: false,
+      error: `Signing this player would exceed the salary cap. Cap space: $${(tierConfig.salaryCap - payrollWithoutPlayer).toLocaleString()}`,
+    };
+  }
+
+  // Get last season win percentage for negotiation
+  const { data: lastSeason } = await supabase
+    .from('seasons')
+    .select('wins, losses')
+    .eq('game_id', gameId)
+    .order('year', { ascending: false })
+    .limit(1)
+    .single();
+
+  const winPct = lastSeason
+    ? (lastSeason as { wins: number; losses: number }).wins /
+      ((lastSeason as { wins: number; losses: number }).wins + (lastSeason as { wins: number; losses: number }).losses)
+    : 0.5;
+
+  // Process the contract extension
+  const result = processContractExpiration(
+    {
+      ...playerData,
+      firstName: playerData.first_name,
+      lastName: playerData.last_name,
+      currentRating: playerData.current_rating,
+      playerType: playerData.player_type as 'HITTER' | 'PITCHER',
+      potential: playerData.potential,
+      tier: playerData.tier as Tier,
+      salary: playerData.salary,
+      contractYears: playerData.contract_years,
+      hiddenTraits: playerData.hidden_traits as any,
+      hitterAttributes: playerData.hitter_attributes as any,
+      pitcherAttributes: playerData.pitcher_attributes as any,
+      traitsRevealed: playerData.traits_revealed,
+      rosterStatus: playerData.roster_status as RosterStatus,
+      confidence: playerData.confidence || 50,
+      gamesPlayed: playerData.games_played || 0,
+      yearsInOrg: playerData.years_in_org || 0,
+      yearsAtTier: playerData.years_at_tier || 0,
+      isInjured: playerData.is_injured,
+      injuryGamesRemaining: playerData.injury_games_remaining || 0,
+      isOnRoster: playerData.is_on_roster,
+      seasonStats: null,
+      draftYear: playerData.draft_year,
+      draftRound: playerData.draft_round,
+      draftPick: playerData.draft_pick,
+      position: playerData.position as any,
+      gameId: playerData.game_id,
+      createdAt: new Date(playerData.created_at),
+      updatedAt: new Date(playerData.updated_at),
+      trainingFocus: (playerData.training_focus || 'overall') as TrainingFocus,
+      currentXp: playerData.current_xp || 0,
+      progressionRate: playerData.progression_rate || 1.0,
+    },
+    winPct,
+    true
+  );
+
+  if (result.outcome === 'resigned' && result.newContract) {
+    // Player accepted - update contract
+    await supabase
+      .from('players')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({
+        salary: result.newContract.salary,
+        contract_years: result.newContract.years,
+      })
+      .eq('id', playerId);
+
+    // Create event
+    await supabase.from('game_events').insert({
+      game_id: gameId,
+      year: 1,
+      type: 'transaction',
+      title: `${playerData.first_name} ${playerData.last_name} Re-Signs`,
+      description: `${playerData.first_name} ${playerData.last_name} has agreed to a ${result.newContract.years}-year, $${result.newContract.totalValue.toLocaleString()} contract extension.`,
+      is_read: false,
+    } as any);
+
+    revalidatePath(`/game/${gameId}`);
+
+    return {
+      success: true,
+      accepted: true,
+      newSalary: result.newContract.salary,
+      newYears: result.newContract.years,
+    };
+  }
+
+  // Player rejected
+  return {
+    success: true,
+    accepted: false,
+    error: `${playerData.first_name} ${playerData.last_name} declined the offer and will test free agency.`,
+  };
+}
+
+/**
+ * Release a player from the roster
+ */
+export async function releasePlayer(
+  gameId: string,
+  playerId: string
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient();
+
+  // Get player data
+  const { data: player } = await supabase
+    .from('players')
+    .select('id, first_name, last_name, salary')
+    .eq('id', playerId)
+    .eq('game_id', gameId)
+    .single();
+
+  if (!player) {
+    return { success: false, error: 'Player not found' };
+  }
+
+  const playerData = player as Pick<PlayerRow, 'id' | 'first_name' | 'last_name' | 'salary'>;
+
+  // Remove player from roster
+  await supabase
+    .from('players')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      is_on_roster: false,
+      roster_status: null,
+    })
+    .eq('id', playerId);
+
+  // Create release event
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: 1,
+    type: 'transaction',
+    title: `${playerData.first_name} ${playerData.last_name} Released`,
+    description: `The team has released ${playerData.first_name} ${playerData.last_name}, saving $${playerData.salary.toLocaleString()} in salary.`,
+    is_read: false,
+  } as any);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return { success: true };
+}
+
+/**
+ * Process all contract expirations at end of season
+ * Called during off-season phase transition
+ */
+export async function processEndOfSeasonContracts(
+  gameId: string
+): Promise<{
+  success: boolean;
+  results: FreeAgentResult[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Get all players with contracts expiring (years = 1, will be 0 after decrement)
+  const { data: expiringPlayers } = await supabase
+    .from('players')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true)
+    .eq('contract_years', 1);
+
+  const results: FreeAgentResult[] = [];
+
+  if (!expiringPlayers || expiringPlayers.length === 0) {
+    // Still decrement all contracts
+    await decrementAllContracts(gameId);
+    return { success: true, results };
+  }
+
+  // Get team win percentage
+  const { data: lastSeason } = await supabase
+    .from('seasons')
+    .select('wins, losses')
+    .eq('game_id', gameId)
+    .order('year', { ascending: false })
+    .limit(1)
+    .single();
+
+  const winPct = lastSeason
+    ? (lastSeason as { wins: number; losses: number }).wins /
+      ((lastSeason as { wins: number; losses: number }).wins + (lastSeason as { wins: number; losses: number }).losses)
+    : 0.5;
+
+  // Process each expiring contract
+  for (const playerRow of expiringPlayers as PlayerRow[]) {
+    // Convert to Player type for processing
+    const player = {
+      ...playerRow,
+      firstName: playerRow.first_name,
+      lastName: playerRow.last_name,
+      currentRating: playerRow.current_rating,
+      playerType: playerRow.player_type as 'HITTER' | 'PITCHER',
+      potential: playerRow.potential,
+      tier: playerRow.tier as Tier,
+      salary: playerRow.salary,
+      contractYears: playerRow.contract_years,
+      hiddenTraits: playerRow.hidden_traits as any,
+      hitterAttributes: playerRow.hitter_attributes as any,
+      pitcherAttributes: playerRow.pitcher_attributes as any,
+      traitsRevealed: playerRow.traits_revealed,
+      rosterStatus: playerRow.roster_status as RosterStatus,
+      confidence: playerRow.confidence || 50,
+      gamesPlayed: playerRow.games_played || 0,
+      yearsInOrg: playerRow.years_in_org || 0,
+      yearsAtTier: playerRow.years_at_tier || 0,
+      isInjured: playerRow.is_injured,
+      injuryGamesRemaining: playerRow.injury_games_remaining || 0,
+      isOnRoster: playerRow.is_on_roster,
+      seasonStats: null,
+      draftYear: playerRow.draft_year,
+      draftRound: playerRow.draft_round,
+      draftPick: playerRow.draft_pick,
+      position: playerRow.position as any,
+      gameId: playerRow.game_id,
+      createdAt: new Date(playerRow.created_at),
+      updatedAt: new Date(playerRow.updated_at),
+      trainingFocus: (playerRow.training_focus || 'overall') as TrainingFocus,
+      currentXp: playerRow.current_xp || 0,
+      progressionRate: playerRow.progression_rate || 1.0,
+    };
+
+    // Auto-offer contracts to good players (rating >= 50)
+    const shouldOffer = player.currentRating >= 50;
+
+    const result = processContractExpiration(player, winPct, shouldOffer);
+    results.push(result);
+
+    if (result.outcome === 'resigned' && result.newContract) {
+      // Player re-signed
+      await supabase
+        .from('players')
+        // @ts-expect-error - Supabase types not inferred without database connection
+        .update({
+          salary: result.newContract.salary,
+          contract_years: result.newContract.years,
+        })
+        .eq('id', playerRow.id);
+
+      // Create event
+      await supabase.from('game_events').insert({
+        game_id: gameId,
+        year: 1,
+        type: 'transaction',
+        title: `${player.firstName} ${player.lastName} Re-Signs`,
+        description: `${player.firstName} ${player.lastName} has re-signed for ${result.newContract.years} year(s) at $${result.newContract.salary.toLocaleString()}/year.`,
+        is_read: false,
+      } as any);
+    } else if (result.outcome === 'departed') {
+      // Player left
+      await supabase
+        .from('players')
+        // @ts-expect-error - Supabase types not inferred without database connection
+        .update({
+          is_on_roster: false,
+          roster_status: null,
+        })
+        .eq('id', playerRow.id);
+
+      // Create event
+      await supabase.from('game_events').insert({
+        game_id: gameId,
+        year: 1,
+        type: 'transaction',
+        title: `${player.firstName} ${player.lastName} Departs`,
+        description: `${player.firstName} ${player.lastName} has ${shouldOffer ? 'rejected our offer and ' : ''}signed with the ${result.destination}.`,
+        is_read: false,
+      } as any);
+    }
+  }
+
+  // Decrement remaining contracts
+  await decrementAllContracts(gameId);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return { success: true, results };
+}
+
+/**
+ * Decrement contract years for all players
+ */
+async function decrementAllContracts(gameId: string): Promise<void> {
+  const supabase = await createClient();
+
+  // Get all rostered players
+  const { data: players } = await supabase
+    .from('players')
+    .select('id, contract_years')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true)
+    .gt('contract_years', 0);
+
+  if (!players) return;
+
+  // Decrement each player's contract years
+  for (const player of players as { id: string; contract_years: number }[]) {
+    await supabase
+      .from('players')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({
+        contract_years: Math.max(0, player.contract_years - 1),
+      })
+      .eq('id', player.id);
+  }
+}
+
+/**
+ * Migrate existing players without proper contracts
+ * Call this once to set up contracts for existing games
+ */
+export async function migratePlayerContracts(gameId: string): Promise<{
+  success: boolean;
+  migratedCount: number;
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Get game tier
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_tier')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, migratedCount: 0, error: 'Game not found' };
+  }
+
+  const tier = (game as Pick<GameRow, 'current_tier'>).current_tier as Tier;
+
+  // Get all players with default/missing contracts (salary = 10000 is the default)
+  const { data: players } = await supabase
+    .from('players')
+    .select('id, current_rating, potential, age, years_in_org')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true)
+    .eq('salary', 10000);
+
+  if (!players || players.length === 0) {
+    return { success: true, migratedCount: 0 };
+  }
+
+  let migratedCount = 0;
+
+  for (const playerRow of players as Pick<PlayerRow, 'id' | 'current_rating' | 'potential' | 'age' | 'years_in_org'>[]) {
+    const contract = generateMigrationContract({
+      currentRating: playerRow.current_rating,
+      potential: playerRow.potential,
+      tier,
+      age: playerRow.age,
+      yearsInOrg: playerRow.years_in_org || 0,
+    });
+
+    await supabase
+      .from('players')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({
+        salary: contract.salary,
+        contract_years: contract.contractYears,
+      })
+      .eq('id', playerRow.id);
+
+    migratedCount++;
+  }
+
+  revalidatePath(`/game/${gameId}`);
+
+  return { success: true, migratedCount };
+}
+
+// ============================================
+// FREE AGENT MARKET
+// ============================================
+
+export interface FreeAgent {
+  id: string;
+  firstName: string;
+  lastName: string;
+  age: number;
+  position: string;
+  playerType: 'HITTER' | 'PITCHER';
+  currentRating: number;
+  potential: number;
+  askingPrice: number;
+  archetype: string;
+}
+
+/**
+ * Calculate asking price based on player rating and potential
+ */
+function calculateAskingPrice(currentRating: number, potential: number, tier: Tier): number {
+  const tierConfig = TIER_CONFIGS[tier];
+  const { minSalary, maxSalary } = tierConfig;
+
+  // Weighted average: 60% current, 40% potential for free agents
+  const effectiveRating = currentRating * 0.6 + potential * 0.4;
+
+  // Normalize rating to 0-1 scale
+  const normalizedRating = Math.max(0, Math.min(1, (effectiveRating - 20) / 60));
+
+  // Quadratic scaling with a premium for free agency (1.2x multiplier)
+  const salaryMultiplier = Math.pow(normalizedRating, 1.6) * 1.2;
+
+  // Calculate salary
+  const salaryRange = maxSalary - minSalary;
+  let salary = minSalary + salaryRange * salaryMultiplier;
+
+  // Clamp and round
+  salary = Math.max(minSalary, Math.min(maxSalary, salary));
+  return Math.round(salary / 1000) * 1000;
+}
+
+/**
+ * Get available free agents for signing
+ * Returns top 100 free agents sorted by rating
+ */
+export async function getFreeAgents(gameId: string): Promise<{
+  success: boolean;
+  freeAgents: FreeAgent[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Get current tier for salary calculations
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_tier, current_year')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, freeAgents: [], error: 'Game not found' };
+  }
+
+  const gameData = game as Pick<GameRow, 'current_tier' | 'current_year'>;
+  const tier = gameData.current_tier as Tier;
+
+  // Fetch free agents from draft_prospects (undrafted players marked as free agents)
+  const { data: prospects, error } = await supabase
+    .from('draft_prospects')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('is_drafted', false)
+    .order('current_rating', { ascending: false })
+    .limit(100);
+
+  if (error) {
+    return { success: false, freeAgents: [], error: 'Failed to fetch free agents' };
+  }
+
+  if (!prospects || prospects.length === 0) {
+    return { success: true, freeAgents: [] };
+  }
+
+  // Also check for released players (players with is_on_roster = false)
+  const { data: releasedPlayers } = await supabase
+    .from('players')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', false)
+    .order('current_rating', { ascending: false })
+    .limit(50);
+
+  // Convert prospects to FreeAgent format
+  const prospectFreeAgents: FreeAgent[] = (prospects as ProspectRow[]).map(p => ({
+    id: p.id,
+    firstName: p.first_name,
+    lastName: p.last_name,
+    age: p.age,
+    position: p.position,
+    playerType: p.player_type as 'HITTER' | 'PITCHER',
+    currentRating: p.current_rating,
+    potential: p.potential,
+    askingPrice: calculateAskingPrice(p.current_rating, p.potential, tier),
+    archetype: p.archetype || 'Unknown',
+  }));
+
+  // Convert released players to FreeAgent format
+  const releasedFreeAgents: FreeAgent[] = (releasedPlayers as PlayerRow[] || []).map(p => ({
+    id: `player-${p.id}`, // Prefix to distinguish from prospects
+    firstName: p.first_name,
+    lastName: p.last_name,
+    age: p.age,
+    position: p.position,
+    playerType: p.player_type as 'HITTER' | 'PITCHER',
+    currentRating: p.current_rating,
+    potential: p.potential,
+    askingPrice: calculateAskingPrice(p.current_rating, p.potential, tier),
+    archetype: 'Veteran',
+  }));
+
+  // Combine and sort by rating
+  const allFreeAgents = [...prospectFreeAgents, ...releasedFreeAgents]
+    .sort((a, b) => b.currentRating - a.currentRating)
+    .slice(0, 100);
+
+  return { success: true, freeAgents: allFreeAgents };
+}
+
+export interface SignFreeAgentResult {
+  success: boolean;
+  error?: string;
+  playerName?: string;
+  salary?: number;
+  contractYears?: number;
+  rosterStatus?: 'ACTIVE' | 'RESERVE';
+}
+
+/**
+ * Sign a free agent to the roster
+ */
+export async function signFreeAgent(
+  gameId: string,
+  freeAgentId: string,
+  offerAmount: number
+): Promise<SignFreeAgentResult> {
+  const supabase = await createClient();
+
+  // Determine if this is a prospect or a released player
+  const isReleasedPlayer = freeAgentId.startsWith('player-');
+  const actualId = isReleasedPlayer ? freeAgentId.replace('player-', '') : freeAgentId;
+
+  // Get game and franchise data
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_tier, current_year')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, error: 'Game not found' };
+  }
+
+  const gameData = game as Pick<GameRow, 'current_tier' | 'current_year'>;
+  const tier = gameData.current_tier as Tier;
+  const tierConfig = TIER_CONFIGS[tier];
+
+  // Get franchise reserves
+  const { data: franchise } = await supabase
+    .from('current_franchise')
+    .select('reserves, facility_level')
+    .eq('game_id', gameId)
+    .single();
+
+  if (!franchise) {
+    return { success: false, error: 'Franchise not found' };
+  }
+
+  const franchiseData = franchise as { reserves: number; facility_level: FacilityLevel };
+  const facilityLevel = franchiseData.facility_level ?? 0;
+  const capacities = getRosterCapacities(facilityLevel);
+
+  // Check budget space
+  if (franchiseData.reserves < offerAmount) {
+    return {
+      success: false,
+      error: `Insufficient funds. You have ${formatCurrency(franchiseData.reserves)} but need ${formatCurrency(offerAmount)}.`,
+    };
+  }
+
+  // Get current payroll
+  const { data: rosterPlayers } = await supabase
+    .from('players')
+    .select('id, salary, roster_status')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true);
+
+  const currentPayroll = (rosterPlayers || []).reduce(
+    (sum, p) => sum + ((p as { salary: number }).salary || 0),
+    0
+  );
+
+  // Check salary cap
+  if (currentPayroll + offerAmount > tierConfig.salaryCap * 1.2) {
+    return {
+      success: false,
+      error: `Would exceed luxury tax threshold. Current payroll: ${formatCurrency(currentPayroll)}, Cap: ${formatCurrency(tierConfig.salaryCap)}.`,
+    };
+  }
+
+  // Check roster space
+  const rosterCounts = { active: 0, reserve: 0 };
+  for (const p of (rosterPlayers || []) as { roster_status: RosterStatus }[]) {
+    if (p.roster_status === 'ACTIVE') rosterCounts.active++;
+    else rosterCounts.reserve++;
+  }
+
+  const totalRoster = rosterCounts.active + rosterCounts.reserve;
+  const totalCapacity = capacities.activeMax + capacities.reserveMax;
+
+  if (totalRoster >= totalCapacity) {
+    return {
+      success: false,
+      error: `Roster is full (${totalRoster}/${totalCapacity}). Release a player first.`,
+    };
+  }
+
+  // Determine roster status
+  const rosterStatus: RosterStatus = rosterCounts.active < capacities.activeMax ? 'ACTIVE' : 'RESERVE';
+
+  let playerName: string;
+
+  if (isReleasedPlayer) {
+    // Re-sign a released player
+    const { data: player } = await supabase
+      .from('players')
+      .select('*')
+      .eq('id', actualId)
+      .single();
+
+    if (!player) {
+      return { success: false, error: 'Player not found' };
+    }
+
+    const playerData = player as PlayerRow;
+    playerName = `${playerData.first_name} ${playerData.last_name}`;
+
+    // Update player record
+    await supabase
+      .from('players')
+      // @ts-expect-error - Supabase types not inferred
+      .update({
+        is_on_roster: true,
+        roster_status: rosterStatus,
+        salary: offerAmount,
+        contract_years: 1, // 1-year prove-it deal
+      })
+      .eq('id', actualId);
+  } else {
+    // Sign a prospect
+    const { data: prospect } = await supabase
+      .from('draft_prospects')
+      .select('*')
+      .eq('id', actualId)
+      .single();
+
+    if (!prospect) {
+      return { success: false, error: 'Free agent not found' };
+    }
+
+    const prospectData = prospect as ProspectRow;
+    playerName = `${prospectData.first_name} ${prospectData.last_name}`;
+
+    // Mark prospect as signed
+    await supabase
+      .from('draft_prospects')
+      // @ts-expect-error - Supabase types not inferred
+      .update({
+        is_drafted: true,
+        drafted_by_team: 'player',
+      })
+      .eq('id', actualId);
+
+    // Create player record
+    await supabase.from('players').insert({
+      game_id: gameId,
+      first_name: prospectData.first_name,
+      last_name: prospectData.last_name,
+      age: prospectData.age,
+      position: prospectData.position,
+      player_type: prospectData.player_type,
+      current_rating: prospectData.current_rating,
+      potential: prospectData.potential,
+      hitter_attributes: prospectData.hitter_attributes,
+      pitcher_attributes: prospectData.pitcher_attributes,
+      hidden_traits: prospectData.hidden_traits,
+      traits_revealed: false,
+      tier: tier,
+      years_at_tier: 0,
+      salary: offerAmount,
+      contract_years: 1, // 1-year prove-it deal
+      is_on_roster: true,
+      roster_status: rosterStatus,
+    } as any);
+  }
+
+  // Deduct from reserves (signing bonus effect)
+  const signingBonus = Math.round(offerAmount * 0.1); // 10% signing bonus
+  await supabase
+    .from('current_franchise')
+    // @ts-expect-error - Supabase types not inferred
+    .update({
+      reserves: franchiseData.reserves - signingBonus,
+    })
+    .eq('game_id', gameId);
+
+  // Create transaction event
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: gameData.current_year,
+    type: 'transaction',
+    title: `${playerName} Signed`,
+    description: `${playerName} has signed a 1-year, ${formatCurrency(offerAmount)} contract. Signing bonus: ${formatCurrency(signingBonus)}.`,
+    is_read: false,
+  } as any);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return {
+    success: true,
+    playerName,
+    salary: offerAmount,
+    contractYears: 1,
+    rosterStatus,
+  };
+}
+
+// Helper function for formatting currency in server action
+function formatCurrency(amount: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+// ============================================
+// PLAYOFFS AND CHAMPIONSHIP
+// ============================================
+
+export interface PlayoffBracketData {
+  id: string;
+  gameId: string;
+  seasonId: string;
+  year: number;
+  status: 'pending' | 'semifinals' | 'finals' | 'complete';
+  championTeamId: string | null;
+  championTeamName: string | null;
+  semifinals: PlayoffSeriesData[];
+  finals: PlayoffSeriesData | null;
+}
+
+export interface PlayoffSeriesData {
+  id: string;
+  bracketId: string;
+  round: 'semifinals' | 'finals';
+  seriesNumber: number;
+  team1: PlayoffTeamData;
+  team2: PlayoffTeamData;
+  team1Wins: number;
+  team2Wins: number;
+  status: 'pending' | 'in_progress' | 'complete';
+  winnerId: string | null;
+  winnerName: string | null;
+  games: PlayoffGameData[];
+}
+
+export interface PlayoffTeamData {
+  id: string;
+  name: string;
+  seed: number;
+  wins: number;
+  losses: number;
+  winPct: number;
+}
+
+export interface PlayoffGameData {
+  id: string;
+  gameNumber: number;
+  homeTeamId: string;
+  awayTeamId: string;
+  homeScore: number | null;
+  awayScore: number | null;
+  winnerId: string | null;
+  isComplete: boolean;
+  homeLineScore: number[];
+  awayLineScore: number[];
+  attendance: number;
+}
+
+/**
+ * Initialize playoffs when entering post_season phase
+ * Creates bracket structure with top 4 teams
+ */
+export async function initializePlayoffs(gameId: string): Promise<{
+  success: boolean;
+  bracket?: PlayoffBracketData;
+  standings?: PlayoffStanding[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Get current game state
+  const { data: game } = await supabase
+    .from('games')
+    .select('id, current_year, current_phase, team_name')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, error: 'Game not found' };
+  }
+
+  const gameData = game as Pick<GameRow, 'id' | 'current_year' | 'current_phase' | 'team_name'>;
+
+  // Check if playoffs already exist for this year
+  const { data: existingBracket } = await supabase
+    .from('playoff_brackets')
+    .select('id')
+    .eq('game_id', gameId)
+    .eq('year', gameData.current_year)
+    .single();
+
+  if (existingBracket) {
+    // Already have a bracket, fetch and return it
+    return getPlayoffBracket(gameId);
+  }
+
+  // Get current season
+  const { data: season } = await supabase
+    .from('seasons')
+    .select('id, wins, losses')
+    .eq('game_id', gameId)
+    .eq('year', gameData.current_year)
+    .single();
+
+  if (!season) {
+    return { success: false, error: 'Season not found' };
+  }
+
+  const seasonData = season as { id: string; wins: number; losses: number };
+
+  // Generate playoff bracket
+  const { bracket, standings } = generatePlayoffBracket({
+    gameId,
+    seasonId: seasonData.id,
+    year: gameData.current_year,
+    playerTeamName: gameData.team_name,
+    playerWins: seasonData.wins,
+    playerLosses: seasonData.losses,
+    aiTeams: AI_TEAMS,
+  });
+
+  // Insert bracket into database
+  const { data: bracketRow, error: bracketError } = await supabase
+    .from('playoff_brackets')
+    .insert({
+      game_id: gameId,
+      season_id: seasonData.id,
+      year: gameData.current_year,
+      status: 'semifinals',
+      champion_team_id: null,
+      champion_team_name: null,
+    } as any)
+    .select()
+    .single();
+
+  if (bracketError || !bracketRow) {
+    return { success: false, error: 'Failed to create playoff bracket' };
+  }
+
+  const bracketData = bracketRow as { id: string };
+
+  // Insert semifinal series
+  const seriesInserts = bracket.semifinals.map((series, idx) => ({
+    bracket_id: bracketData.id,
+    round: 'semifinals',
+    series_number: idx + 1,
+    team1_id: series.team1.id,
+    team1_name: series.team1.name,
+    team1_seed: series.team1.seed,
+    team1_wins: 0,
+    team2_id: series.team2.id,
+    team2_name: series.team2.name,
+    team2_seed: series.team2.seed,
+    team2_wins: 0,
+    status: 'pending',
+    winner_id: null,
+    winner_name: null,
+  }));
+
+  const { error: seriesError } = await supabase
+    .from('playoff_series')
+    .insert(seriesInserts as any);
+
+  if (seriesError) {
+    return { success: false, error: 'Failed to create playoff series' };
+  }
+
+  // Create game event for playoffs starting
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: gameData.current_year,
+    type: 'milestone',
+    title: 'Playoffs Begin!',
+    description: `The ${gameData.team_name} have made the playoffs as the #${standings.findIndex(s => s.isPlayer) + 1} seed!`,
+    is_read: false,
+  } as any);
+
+  revalidatePath(`/game/${gameId}`);
+
+  // Return the created bracket
+  return getPlayoffBracket(gameId);
+}
+
+/**
+ * Get current playoff bracket for the game
+ */
+export async function getPlayoffBracket(gameId: string): Promise<{
+  success: boolean;
+  bracket?: PlayoffBracketData;
+  standings?: PlayoffStanding[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Get current year
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_year')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, error: 'Game not found' };
+  }
+
+  const gameData = game as Pick<GameRow, 'current_year'>;
+
+  // Get bracket
+  const { data: bracketRow } = await supabase
+    .from('playoff_brackets')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('year', gameData.current_year)
+    .single();
+
+  if (!bracketRow) {
+    return { success: false, error: 'No playoff bracket found' };
+  }
+
+  const bracket = bracketRow as {
+    id: string;
+    game_id: string;
+    season_id: string;
+    year: number;
+    status: string;
+    champion_team_id: string | null;
+    champion_team_name: string | null;
+  };
+
+  // Get all series for this bracket
+  const { data: seriesRows } = await supabase
+    .from('playoff_series')
+    .select('*')
+    .eq('bracket_id', bracket.id)
+    .order('round', { ascending: true })
+    .order('series_number', { ascending: true });
+
+  const allSeries = (seriesRows || []) as {
+    id: string;
+    bracket_id: string;
+    round: string;
+    series_number: number;
+    team1_id: string;
+    team1_name: string;
+    team1_seed: number;
+    team1_wins: number;
+    team2_id: string;
+    team2_name: string;
+    team2_seed: number;
+    team2_wins: number;
+    status: string;
+    winner_id: string | null;
+    winner_name: string | null;
+  }[];
+
+  // Get all games for all series
+  const seriesIds = allSeries.map(s => s.id);
+  const { data: gameRows } = await supabase
+    .from('playoff_games')
+    .select('*')
+    .in('series_id', seriesIds)
+    .order('game_number', { ascending: true });
+
+  const allGames = (gameRows || []) as {
+    id: string;
+    series_id: string;
+    game_number: number;
+    home_team_id: string;
+    away_team_id: string;
+    home_score: number | null;
+    away_score: number | null;
+    winner_id: string | null;
+    is_complete: boolean;
+    home_line_score: number[];
+    away_line_score: number[];
+    attendance: number;
+  }[];
+
+  // Build series data with games
+  const buildSeriesData = (series: typeof allSeries[0]): PlayoffSeriesData => {
+    const seriesGames = allGames.filter(g => g.series_id === series.id);
+    return {
+      id: series.id,
+      bracketId: series.bracket_id,
+      round: series.round as 'semifinals' | 'finals',
+      seriesNumber: series.series_number,
+      team1: {
+        id: series.team1_id,
+        name: series.team1_name,
+        seed: series.team1_seed,
+        wins: 0,
+        losses: 0,
+        winPct: 0,
+      },
+      team2: {
+        id: series.team2_id,
+        name: series.team2_name,
+        seed: series.team2_seed,
+        wins: 0,
+        losses: 0,
+        winPct: 0,
+      },
+      team1Wins: series.team1_wins,
+      team2Wins: series.team2_wins,
+      status: series.status as 'pending' | 'in_progress' | 'complete',
+      winnerId: series.winner_id,
+      winnerName: series.winner_name,
+      games: seriesGames.map(g => ({
+        id: g.id,
+        gameNumber: g.game_number,
+        homeTeamId: g.home_team_id,
+        awayTeamId: g.away_team_id,
+        homeScore: g.home_score,
+        awayScore: g.away_score,
+        winnerId: g.winner_id,
+        isComplete: g.is_complete,
+        homeLineScore: g.home_line_score || [],
+        awayLineScore: g.away_line_score || [],
+        attendance: g.attendance || 0,
+      })),
+    };
+  };
+
+  const semifinals = allSeries.filter(s => s.round === 'semifinals').map(buildSeriesData);
+  const finalsSeries = allSeries.find(s => s.round === 'finals');
+  const finals = finalsSeries ? buildSeriesData(finalsSeries) : null;
+
+  return {
+    success: true,
+    bracket: {
+      id: bracket.id,
+      gameId: bracket.game_id,
+      seasonId: bracket.season_id,
+      year: bracket.year,
+      status: bracket.status as 'pending' | 'semifinals' | 'finals' | 'complete',
+      championTeamId: bracket.champion_team_id,
+      championTeamName: bracket.champion_team_name,
+      semifinals,
+      finals,
+    },
+  };
+}
+
+/**
+ * Simulate the next game in a playoff series
+ */
+export async function simulatePlayoffSeriesGame(
+  gameId: string,
+  seriesId: string
+): Promise<{
+  success: boolean;
+  game?: PlayoffGameData;
+  seriesComplete: boolean;
+  winnerId?: string | null;
+  winnerName?: string | null;
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Get franchise for stadium capacity
+  const { data: franchise } = await supabase
+    .from('current_franchise')
+    .select('stadium_capacity')
+    .eq('game_id', gameId)
+    .single();
+
+  if (!franchise) {
+    return { success: false, seriesComplete: false, error: 'Franchise not found' };
+  }
+
+  const franchiseData = franchise as { stadium_capacity: number };
+
+  // Get series data
+  const { data: seriesRow } = await supabase
+    .from('playoff_series')
+    .select('*')
+    .eq('id', seriesId)
+    .single();
+
+  if (!seriesRow) {
+    return { success: false, seriesComplete: false, error: 'Series not found' };
+  }
+
+  const series = seriesRow as {
+    id: string;
+    bracket_id: string;
+    round: string;
+    team1_id: string;
+    team1_name: string;
+    team1_seed: number;
+    team1_wins: number;
+    team2_id: string;
+    team2_name: string;
+    team2_seed: number;
+    team2_wins: number;
+    status: string;
+  };
+
+  // Check if series is already complete
+  if (series.status === 'complete') {
+    return { success: false, seriesComplete: true, error: 'Series already complete' };
+  }
+
+  // Build PlayoffSeries for simulation
+  const playoffSeries: PlayoffSeries = {
+    id: series.id,
+    bracketId: series.bracket_id,
+    round: series.round as PlayoffRound,
+    seriesNumber: 1,
+    team1: {
+      id: series.team1_id,
+      name: series.team1_name,
+      seed: series.team1_seed,
+      wins: 0,
+      losses: 0,
+      winPct: series.team1_seed === 1 ? 0.6 : series.team1_seed === 2 ? 0.55 : series.team1_seed === 3 ? 0.5 : 0.45,
+    },
+    team2: {
+      id: series.team2_id,
+      name: series.team2_name,
+      seed: series.team2_seed,
+      wins: 0,
+      losses: 0,
+      winPct: series.team2_seed === 1 ? 0.6 : series.team2_seed === 2 ? 0.55 : series.team2_seed === 3 ? 0.5 : 0.45,
+    },
+    team1Wins: series.team1_wins,
+    team2Wins: series.team2_wins,
+    status: series.status as 'pending' | 'in_progress' | 'complete',
+    winnerId: null,
+    winnerName: null,
+    games: [],
+  };
+
+  // Simulate next game
+  const result = simulateNextSeriesGame(playoffSeries, franchiseData.stadium_capacity);
+
+  // Insert game record
+  const { data: gameRow, error: gameError } = await supabase
+    .from('playoff_games')
+    .insert({
+      series_id: seriesId,
+      game_number: result.game.gameNumber,
+      home_team_id: result.game.homeTeamId,
+      away_team_id: result.game.awayTeamId,
+      home_score: result.game.homeScore,
+      away_score: result.game.awayScore,
+      winner_id: result.game.winnerId,
+      is_complete: true,
+      home_line_score: result.game.homeLineScore,
+      away_line_score: result.game.awayLineScore,
+      attendance: result.game.attendance,
+    } as any)
+    .select()
+    .single();
+
+  if (gameError || !gameRow) {
+    return { success: false, seriesComplete: false, error: 'Failed to save game' };
+  }
+
+  const savedGame = gameRow as { id: string };
+
+  // Update series wins
+  const newStatus = result.isSeriesComplete ? 'complete' : 'in_progress';
+  await supabase
+    .from('playoff_series')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      team1_wins: result.newTeam1Wins,
+      team2_wins: result.newTeam2Wins,
+      status: newStatus,
+      winner_id: result.winnerId,
+      winner_name: result.winnerName,
+    })
+    .eq('id', seriesId);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return {
+    success: true,
+    game: {
+      id: savedGame.id,
+      gameNumber: result.game.gameNumber,
+      homeTeamId: result.game.homeTeamId,
+      awayTeamId: result.game.awayTeamId,
+      homeScore: result.game.homeScore,
+      awayScore: result.game.awayScore,
+      winnerId: result.game.winnerId,
+      isComplete: true,
+      homeLineScore: result.game.homeLineScore,
+      awayLineScore: result.game.awayLineScore,
+      attendance: result.game.attendance,
+    },
+    seriesComplete: result.isSeriesComplete,
+    winnerId: result.winnerId,
+    winnerName: result.winnerName,
+  };
+}
+
+/**
+ * Advance playoffs after a series completes
+ * Creates finals series or completes playoffs
+ */
+export async function advancePlayoffs(gameId: string): Promise<{
+  success: boolean;
+  newRound?: 'finals' | 'complete';
+  championId?: string;
+  championName?: string;
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Get current bracket
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_year, team_name')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, error: 'Game not found' };
+  }
+
+  const gameData = game as Pick<GameRow, 'current_year' | 'team_name'>;
+
+  const { data: bracketRow } = await supabase
+    .from('playoff_brackets')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('year', gameData.current_year)
+    .single();
+
+  if (!bracketRow) {
+    return { success: false, error: 'No playoff bracket found' };
+  }
+
+  const bracket = bracketRow as {
+    id: string;
+    status: string;
+  };
+
+  // Get all series
+  const { data: seriesRows } = await supabase
+    .from('playoff_series')
+    .select('*')
+    .eq('bracket_id', bracket.id);
+
+  const allSeries = (seriesRows || []) as {
+    id: string;
+    round: string;
+    winner_id: string | null;
+    winner_name: string | null;
+    team1_id: string;
+    team1_name: string;
+    team1_seed: number;
+    team2_id: string;
+    team2_name: string;
+    team2_seed: number;
+  }[];
+
+  if (bracket.status === 'semifinals') {
+    // Check if both semifinals are complete
+    const semifinals = allSeries.filter(s => s.round === 'semifinals');
+    const completedSemis = semifinals.filter(s => s.winner_id !== null);
+
+    if (completedSemis.length < 2) {
+      return { success: false, error: 'Not all semifinals are complete' };
+    }
+
+    // Create finals series
+    const semifinal1 = semifinals.find(s => s.team1_seed === 1 || s.team2_seed === 1);
+    const semifinal2 = semifinals.find(s => s.team1_seed === 2 || s.team2_seed === 2);
+
+    if (!semifinal1 || !semifinal2 || !semifinal1.winner_id || !semifinal2.winner_id) {
+      return { success: false, error: 'Invalid semifinals state' };
+    }
+
+    // Determine seeds for winners
+    const winner1Seed = semifinal1.winner_id === semifinal1.team1_id ? semifinal1.team1_seed : semifinal1.team2_seed;
+    const winner2Seed = semifinal2.winner_id === semifinal2.team1_id ? semifinal2.team1_seed : semifinal2.team2_seed;
+
+    const finals = generateFinalsSeries(
+      bracket.id,
+      {
+        id: semifinal1.winner_id,
+        name: semifinal1.winner_name!,
+        seed: winner1Seed,
+        winPct: winner1Seed === 1 ? 0.6 : 0.55,
+      },
+      {
+        id: semifinal2.winner_id,
+        name: semifinal2.winner_name!,
+        seed: winner2Seed,
+        winPct: winner2Seed === 2 ? 0.55 : 0.5,
+      }
+    );
+
+    // Insert finals series
+    await supabase
+      .from('playoff_series')
+      .insert({
+        bracket_id: bracket.id,
+        round: 'finals',
+        series_number: 1,
+        team1_id: finals.team1.id,
+        team1_name: finals.team1.name,
+        team1_seed: finals.team1.seed,
+        team1_wins: 0,
+        team2_id: finals.team2.id,
+        team2_name: finals.team2.name,
+        team2_seed: finals.team2.seed,
+        team2_wins: 0,
+        status: 'pending',
+      } as any);
+
+    // Update bracket status
+    await supabase
+      .from('playoff_brackets')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({ status: 'finals' })
+      .eq('id', bracket.id);
+
+    // Create event for finals
+    await supabase.from('game_events').insert({
+      game_id: gameId,
+      year: gameData.current_year,
+      type: 'milestone',
+      title: 'Championship Finals!',
+      description: `${finals.team1.name} vs ${finals.team2.name} for the championship!`,
+      is_read: false,
+    } as any);
+
+    revalidatePath(`/game/${gameId}`);
+
+    return { success: true, newRound: 'finals' };
+  }
+
+  if (bracket.status === 'finals') {
+    // Check if finals are complete
+    const finals = allSeries.find(s => s.round === 'finals');
+
+    if (!finals || !finals.winner_id) {
+      return { success: false, error: 'Finals not complete' };
+    }
+
+    // Update bracket with champion
+    await supabase
+      .from('playoff_brackets')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({
+        status: 'complete',
+        champion_team_id: finals.winner_id,
+        champion_team_name: finals.winner_name,
+      })
+      .eq('id', bracket.id);
+
+    const isPlayerChampion = finals.winner_id === 'player';
+
+    // Create championship event
+    await supabase.from('game_events').insert({
+      game_id: gameId,
+      year: gameData.current_year,
+      type: 'milestone',
+      title: isPlayerChampion ? 'CHAMPIONS!' : 'Season Complete',
+      description: isPlayerChampion
+        ? `The ${gameData.team_name} have won the championship! What a historic season!`
+        : `${finals.winner_name} have won the championship. Better luck next season!`,
+      is_read: false,
+    } as any);
+
+    // Update season with championship flag if player won
+    if (isPlayerChampion) {
+      const { data: season } = await supabase
+        .from('seasons')
+        .select('id')
+        .eq('game_id', gameId)
+        .eq('year', gameData.current_year)
+        .single();
+
+      if (season) {
+        await supabase
+          .from('seasons')
+          // @ts-expect-error - Supabase types not inferred without database connection
+          .update({ championship_winner: true })
+          .eq('id', (season as { id: string }).id);
+      }
+    }
+
+    revalidatePath(`/game/${gameId}`);
+
+    return {
+      success: true,
+      newRound: 'complete',
+      championId: finals.winner_id,
+      championName: finals.winner_name || undefined,
+    };
+  }
+
+  return { success: false, error: 'Invalid bracket status' };
+}
+
+/**
+ * Simulate entire playoff series at once (for quick simulation)
+ */
+export async function simulateEntireSeries(
+  gameId: string,
+  seriesId: string
+): Promise<{
+  success: boolean;
+  winnerId?: string;
+  winnerName?: string;
+  team1Wins?: number;
+  team2Wins?: number;
+  error?: string;
+}> {
+  let result = await simulatePlayoffSeriesGame(gameId, seriesId);
+
+  while (result.success && !result.seriesComplete) {
+    result = await simulatePlayoffSeriesGame(gameId, seriesId);
+  }
+
+  if (!result.success) {
+    return { success: false, error: result.error };
+  }
+
+  // Get final series state
+  const supabase = await createClient();
+  const { data: seriesRow } = await supabase
+    .from('playoff_series')
+    .select('team1_wins, team2_wins, winner_id, winner_name')
+    .eq('id', seriesId)
+    .single();
+
+  if (!seriesRow) {
+    return { success: false, error: 'Failed to get series result' };
+  }
+
+  const series = seriesRow as {
+    team1_wins: number;
+    team2_wins: number;
+    winner_id: string;
+    winner_name: string;
+  };
+
+  return {
+    success: true,
+    winnerId: series.winner_id,
+    winnerName: series.winner_name,
+    team1Wins: series.team1_wins,
+    team2Wins: series.team2_wins,
+  };
+}
+
+// ============================================
+// OFFSEASON ROLLOVER SYSTEM
+// ============================================
+
+export interface SeasonSummaryData {
+  year: number;
+  tier: string;
+  teamName: string;
+  wins: number;
+  losses: number;
+  winPct: number;
+  leagueRank: number;
+  madePlayoffs: boolean;
+  playoffResult: 'Champion' | 'Finals' | 'Semifinals' | 'Missed';
+  championName: string | null;
+  finalsMatchup: { team1: string; team2: string } | null;
+  totalRevenue: number;
+  totalExpenses: number;
+  netIncome: number;
+  avgAttendance: number;
+  mvpPlayer: { id: string; name: string } | null;
+  expiringContracts: Array<{
+    id: string;
+    name: string;
+    position: string;
+    rating: number;
+  }>;
+  topPerformers: Array<{
+    id: string;
+    name: string;
+    position: string;
+    rating: number;
+    keyStats: string;
+  }>;
+}
+
+/**
+ * Get season summary for the SeasonReview UI
+ */
+export async function getSeasonSummary(gameId: string): Promise<{
+  success: boolean;
+  summary?: SeasonSummaryData;
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  // Get game data
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_year, current_tier, team_name')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, error: 'Game not found' };
+  }
+
+  const gameData = game as Pick<GameRow, 'current_year' | 'current_tier' | 'team_name'>;
+
+  // Get season data
+  const { data: season } = await supabase
+    .from('seasons')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('year', gameData.current_year)
+    .single();
+
+  if (!season) {
+    return { success: false, error: 'Season not found' };
+  }
+
+  const seasonData = season as {
+    wins: number;
+    losses: number;
+    total_revenue: number;
+    total_expenses: number;
+    total_attendance: number;
+    games_played: number;
+    league_rank: number;
+    made_playoffs: boolean;
+  };
+
+  // Get playoff bracket if exists
+  const { data: bracket } = await supabase
+    .from('playoff_brackets')
+    .select('*, playoff_series(*)')
+    .eq('game_id', gameId)
+    .eq('year', gameData.current_year)
+    .single();
+
+  let playoffResult: 'Champion' | 'Finals' | 'Semifinals' | 'Missed' = 'Missed';
+  let championName: string | null = null;
+  let finalsMatchup: { team1: string; team2: string } | null = null;
+
+  if (bracket) {
+    const bracketData = bracket as {
+      champion_team_id: string | null;
+      champion_team_name: string | null;
+      playoff_series: Array<{
+        round: string;
+        team1_name: string;
+        team2_name: string;
+        winner_id: string | null;
+      }>;
+    };
+
+    championName = bracketData.champion_team_name;
+
+    // Find finals series
+    const finals = bracketData.playoff_series?.find(s => s.round === 'finals');
+    if (finals) {
+      finalsMatchup = { team1: finals.team1_name, team2: finals.team2_name };
+    }
+
+    // Determine player's result
+    if (bracketData.champion_team_id === 'player') {
+      playoffResult = 'Champion';
+    } else if (finals) {
+      // Check if player was in finals
+      const playerInFinals = finals.team1_name === gameData.team_name || finals.team2_name === gameData.team_name;
+      if (playerInFinals) {
+        playoffResult = 'Finals';
+      } else {
+        playoffResult = 'Semifinals';
+      }
+    } else if (seasonData.made_playoffs) {
+      playoffResult = 'Semifinals';
+    }
+  }
+
+  // Get players with expiring contracts
+  const { data: expiringPlayers } = await supabase
+    .from('players')
+    .select('id, first_name, last_name, position, current_rating, contract_years')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true)
+    .eq('contract_years', 1);
+
+  const expiringContracts = (expiringPlayers || []).map(p => ({
+    id: (p as PlayerRow).id,
+    name: `${(p as PlayerRow).first_name} ${(p as PlayerRow).last_name}`,
+    position: (p as PlayerRow).position,
+    rating: (p as PlayerRow).current_rating,
+  }));
+
+  // Get top performers (highest rated players)
+  const { data: allPlayers } = await supabase
+    .from('players')
+    .select('id, first_name, last_name, position, player_type, current_rating, season_stats')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true)
+    .order('current_rating', { ascending: false })
+    .limit(5);
+
+  const topPerformers = (allPlayers || []).map(p => {
+    const player = p as PlayerRow & { season_stats: Record<string, number> | null };
+    const stats = player.season_stats;
+    let keyStats = '';
+
+    if (player.player_type === 'HITTER' && stats) {
+      const avg = stats.atBats ? (stats.hits / stats.atBats).toFixed(3) : '.000';
+      keyStats = `${avg} AVG, ${stats.homeRuns || 0} HR, ${stats.rbi || 0} RBI`;
+    } else if (player.player_type === 'PITCHER' && stats) {
+      const era = stats.era?.toFixed(2) || '0.00';
+      keyStats = `${stats.wins || 0}-${stats.losses || 0}, ${era} ERA, ${stats.strikeouts || 0} K`;
+    }
+
+    return {
+      id: player.id,
+      name: `${player.first_name} ${player.last_name}`,
+      position: player.position,
+      rating: player.current_rating,
+      keyStats,
+    };
+  });
+
+  // Find MVP
+  const mvpCandidates = (allPlayers || []).map(p => {
+    const player = p as PlayerRow & { season_stats: Record<string, unknown> | null };
+    return {
+      id: player.id,
+      name: `${player.first_name} ${player.last_name}`,
+      playerType: player.player_type as 'HITTER' | 'PITCHER',
+      seasonStats: player.season_stats,
+      currentRating: player.current_rating,
+    };
+  });
+
+  const mvpPlayer = determineSeasonMVP(mvpCandidates);
+
+  const winPct = seasonData.wins / (seasonData.wins + seasonData.losses) || 0;
+  const avgAttendance = seasonData.games_played > 0
+    ? Math.round(seasonData.total_attendance / (seasonData.games_played / 2)) // Home games only
+    : 0;
+
+  return {
+    success: true,
+    summary: {
+      year: gameData.current_year,
+      tier: gameData.current_tier,
+      teamName: gameData.team_name,
+      wins: seasonData.wins,
+      losses: seasonData.losses,
+      winPct,
+      leagueRank: seasonData.league_rank || 1,
+      madePlayoffs: seasonData.made_playoffs || false,
+      playoffResult,
+      championName,
+      finalsMatchup,
+      totalRevenue: seasonData.total_revenue || 0,
+      totalExpenses: seasonData.total_expenses || 0,
+      netIncome: (seasonData.total_revenue || 0) - (seasonData.total_expenses || 0),
+      avgAttendance,
+      mvpPlayer: mvpPlayer ? { id: mvpPlayer.playerId, name: mvpPlayer.playerName } : null,
+      expiringContracts,
+      topPerformers,
+    },
+  };
+}
+
+export interface AdvanceSeasonResult {
+  success: boolean;
+  newYear?: number;
+  offseasonSummary?: OffseasonSummary;
+  error?: string;
+}
+
+/**
+ * Advance to the next season - main rollover function
+ */
+export async function advanceToNextSeason(gameId: string): Promise<AdvanceSeasonResult> {
+  const supabase = await createClient();
+
+  // Get current game state
+  const { data: game } = await supabase
+    .from('games')
+    .select('current_year, current_tier, team_name')
+    .eq('id', gameId)
+    .single();
+
+  if (!game) {
+    return { success: false, error: 'Game not found' };
+  }
+
+  const gameData = game as Pick<GameRow, 'current_year' | 'current_tier' | 'team_name'>;
+  const currentYear = gameData.current_year;
+  const newYear = currentYear + 1;
+  const tier = gameData.current_tier as Tier;
+
+  // Get current season data
+  const { data: season } = await supabase
+    .from('seasons')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('year', currentYear)
+    .single();
+
+  if (!season) {
+    return { success: false, error: 'Current season not found' };
+  }
+
+  const seasonData = season as {
+    id: string;
+    wins: number;
+    losses: number;
+    total_revenue: number;
+    total_expenses: number;
+    total_attendance: number;
+    games_played: number;
+    league_rank: number;
+    made_playoffs: boolean;
+    championship_winner: boolean;
+  };
+
+  // Get playoff bracket for playoff result
+  const { data: bracket } = await supabase
+    .from('playoff_brackets')
+    .select('champion_team_id, champion_team_name')
+    .eq('game_id', gameId)
+    .eq('year', currentYear)
+    .single();
+
+  const bracketData = bracket as { champion_team_id: string | null; champion_team_name: string | null } | null;
+
+  // ============================================
+  // STEP 1: ARCHIVE TEAM HISTORY
+  // ============================================
+
+  const playoffResult = determinePlayoffResult(
+    seasonData.made_playoffs,
+    bracketData?.champion_team_id || null,
+    bracketData?.champion_team_id || null,
+    null,
+    'player'
+  );
+
+  // Get MVP from roster
+  const { data: allPlayers } = await supabase
+    .from('players')
+    .select('id, first_name, last_name, player_type, current_rating, season_stats')
+    .eq('game_id', gameId)
+    .eq('is_on_roster', true);
+
+  const mvpCandidates = (allPlayers || []).map(p => {
+    const player = p as PlayerRow & { season_stats: Record<string, unknown> | null };
+    return {
+      id: player.id,
+      name: `${player.first_name} ${player.last_name}`,
+      playerType: player.player_type as 'HITTER' | 'PITCHER',
+      seasonStats: player.season_stats,
+      currentRating: player.current_rating,
+    };
+  });
+
+  const mvp = determineSeasonMVP(mvpCandidates);
+
+  const teamHistoryEntry: TeamHistoryEntry = {
+    year: currentYear,
+    tier: tier,
+    wins: seasonData.wins,
+    losses: seasonData.losses,
+    winPct: seasonData.wins / (seasonData.wins + seasonData.losses) || 0,
+    leagueRank: seasonData.league_rank || 1,
+    madePlayoffs: seasonData.made_playoffs,
+    playoffResult,
+    totalRevenue: seasonData.total_revenue || 0,
+    totalExpenses: seasonData.total_expenses || 0,
+    netIncome: (seasonData.total_revenue || 0) - (seasonData.total_expenses || 0),
+    avgAttendance: seasonData.games_played > 0
+      ? Math.round(seasonData.total_attendance / (seasonData.games_played / 2))
+      : 0,
+    mvpPlayerId: mvp?.playerId,
+    mvpPlayerName: mvp?.playerName,
+  };
+
+  // Insert team history
+  await supabase.from('team_history').insert({
+    game_id: gameId,
+    year: currentYear,
+    tier: tier,
+    wins: teamHistoryEntry.wins,
+    losses: teamHistoryEntry.losses,
+    win_pct: teamHistoryEntry.winPct,
+    league_rank: teamHistoryEntry.leagueRank,
+    made_playoffs: teamHistoryEntry.madePlayoffs,
+    playoff_result: teamHistoryEntry.playoffResult,
+    total_revenue: teamHistoryEntry.totalRevenue,
+    total_expenses: teamHistoryEntry.totalExpenses,
+    net_income: teamHistoryEntry.netIncome,
+    avg_attendance: teamHistoryEntry.avgAttendance,
+    mvp_player_id: teamHistoryEntry.mvpPlayerId,
+    mvp_player_name: teamHistoryEntry.mvpPlayerName,
+  } as any);
+
+  // ============================================
+  // STEP 2: PROCESS PLAYERS - ARCHIVE STATS, AGE, DEVELOP, CONTRACTS
+  // ============================================
+
+  const winterDevelopment: WinterDevelopmentResult[] = [];
+  const contractExpirations: ContractExpirationResult[] = [];
+  const departingFreeAgents: ContractExpirationResult[] = [];
+
+  type PlayerWithStats = PlayerRow & {
+    career_stats: SeasonStatsSummary[] | null;
+    season_stats: Record<string, unknown> | null;
+  };
+  const rosterPlayers = (allPlayers || []) as PlayerWithStats[];
+
+  for (const player of rosterPlayers) {
+    const playerType = player.player_type as 'HITTER' | 'PITCHER';
+
+    // Archive season stats to career stats
+    const existingCareerStats = player.career_stats || [];
+    const newCareerStats = archiveSeasonStats(
+      player.season_stats,
+      existingCareerStats,
+      currentYear,
+      tier,
+      playerType
+    );
+
+    // Reset season stats
+    const emptyStats = createEmptySeasonStats(playerType);
+
+    // Age player
+    const newAge = player.age + 1;
+
+    // Winter development
+    const workEthic = (player.hidden_traits as { workEthic?: WorkEthic } | null)?.workEthic || 'average';
+    const development = calculateWinterDevelopment(
+      newAge,
+      player.current_rating,
+      player.potential,
+      workEthic
+    );
+
+    const newRating = applyRatingChange(player.current_rating, development.ratingChange);
+
+    if (development.ratingChange !== 0) {
+      winterDevelopment.push({
+        playerId: player.id,
+        playerName: `${player.first_name} ${player.last_name}`,
+        age: newAge,
+        previousRating: player.current_rating,
+        newRating,
+        ratingChange: development.ratingChange,
+        reason: development.reason,
+      });
+    }
+
+    // Process contract
+    const contractResult = processContractYear(player.contract_years || 1);
+
+    contractExpirations.push({
+      playerId: player.id,
+      playerName: `${player.first_name} ${player.last_name}`,
+      position: player.position,
+      previousRating: player.current_rating,
+      becameFreeAgent: contractResult.becameFreeAgent,
+    });
+
+    if (contractResult.becameFreeAgent) {
+      departingFreeAgents.push({
+        playerId: player.id,
+        playerName: `${player.first_name} ${player.last_name}`,
+        position: player.position,
+        previousRating: player.current_rating,
+        becameFreeAgent: true,
+      });
+    }
+
+    // Update player
+    await supabase
+      .from('players')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({
+        age: newAge,
+        current_rating: newRating,
+        career_stats: newCareerStats,
+        season_stats: emptyStats,
+        contract_years: contractResult.newContractYears,
+        is_on_roster: !contractResult.becameFreeAgent,
+        is_free_agent: contractResult.becameFreeAgent,
+        years_in_org: contractResult.becameFreeAgent ? 0 : (player.years_in_org || 0) + 1,
+      })
+      .eq('id', player.id);
+  }
+
+  // ============================================
+  // STEP 3: GENERATE DRAFT ORDER
+  // ============================================
+
+  const draftOrder = generateDraftOrder(
+    gameData.team_name,
+    seasonData.wins,
+    seasonData.losses,
+    AI_TEAMS,
+    newYear
+  );
+
+  // Insert draft order
+  for (const entry of draftOrder) {
+    await supabase.from('draft_orders').insert({
+      game_id: gameId,
+      year: newYear,
+      pick_number: entry.pickNumber,
+      team_id: entry.teamId,
+      team_name: entry.teamName,
+      previous_season_wins: entry.previousSeasonWins,
+      previous_season_losses: entry.previousSeasonLosses,
+      is_used: false,
+    } as any);
+  }
+
+  const playerDraftPosition = getPlayerDraftPosition(draftOrder);
+
+  // ============================================
+  // STEP 4: CREATE NEW SEASON
+  // ============================================
+
+  // Create new season record
+  await supabase.from('seasons').insert({
+    game_id: gameId,
+    year: newYear,
+    tier: tier,
+    wins: 0,
+    losses: 0,
+    games_played: 0,
+    total_attendance: 0,
+    total_revenue: 0,
+    total_expenses: 0,
+    is_complete: false,
+  } as any);
+
+  // Generate new draft class
+  await supabase.from('drafts').insert({
+    game_id: gameId,
+    year: newYear,
+    round: 1,
+    pick_order: JSON.stringify(draftOrder.map(e => e.teamId)),
+    current_pick: 1,
+    is_complete: false,
+  } as any);
+
+  // Generate prospects for the new draft
+  const draftClass = generateDraftClass({
+    gameId,
+    draftYear: newYear,
+    totalPlayers: 800,
+  });
+
+  for (const prospect of draftClass) {
+    await supabase.from('draft_prospects').insert({
+      game_id: gameId,
+      draft_year: newYear,
+      first_name: prospect.firstName,
+      last_name: prospect.lastName,
+      age: prospect.age,
+      position: prospect.position,
+      player_type: prospect.playerType,
+      current_rating: prospect.currentRating,
+      potential: prospect.potential,
+      hitter_attributes: prospect.hitterAttributes || null,
+      pitcher_attributes: prospect.pitcherAttributes || null,
+      hidden_traits: prospect.hiddenTraits || null,
+      archetype: prospect.archetype,
+      scouted_rating: null,
+      scouted_potential: null,
+      scout_accuracy: null,
+      is_drafted: false,
+    } as any);
+  }
+
+  // ============================================
+  // STEP 5: UPDATE GAME STATE
+  // ============================================
+
+  await supabase
+    .from('games')
+    // @ts-expect-error - Supabase types not inferred without database connection
+    .update({
+      current_year: newYear,
+      current_phase: 'draft',
+    })
+    .eq('id', gameId);
+
+  // Create news event for new season
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: newYear,
+    type: 'milestone',
+    title: `Year ${newYear} Begins!`,
+    description: `The offseason is complete. Your team enters Year ${newYear} with ${rosterPlayers.length - departingFreeAgents.length} players on the roster. Draft position: #${playerDraftPosition}`,
+    is_read: false,
+  } as any);
+
+  // Create events for departing free agents
+  for (const fa of departingFreeAgents) {
+    await supabase.from('game_events').insert({
+      game_id: gameId,
+      year: newYear,
+      type: 'transaction',
+      title: `${fa.playerName} Departs`,
+      description: `${fa.playerName} (${fa.position}, ${fa.previousRating} OVR) has become a free agent after their contract expired.`,
+      is_read: false,
+    } as any);
+  }
+
+  revalidatePath(`/game/${gameId}`);
+
+  return {
+    success: true,
+    newYear,
+    offseasonSummary: {
+      previousYear: currentYear,
+      newYear,
+      teamHistory: teamHistoryEntry,
+      winterDevelopment,
+      contractExpirations,
+      departingFreeAgents,
+      draftOrder,
+      playerDraftPosition,
+    },
+  };
+}
+
+/**
+ * Get team history for all seasons played
+ */
+export async function getTeamHistory(gameId: string): Promise<{
+  success: boolean;
+  history?: TeamHistoryEntry[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  const { data: history, error } = await supabase
+    .from('team_history')
+    .select('*')
+    .eq('game_id', gameId)
+    .order('year', { ascending: true });
+
+  if (error) {
+    return { success: false, error: 'Failed to fetch team history' };
+  }
+
+  const entries: TeamHistoryEntry[] = (history || []).map(h => ({
+    year: (h as any).year,
+    tier: (h as any).tier,
+    wins: (h as any).wins,
+    losses: (h as any).losses,
+    winPct: parseFloat((h as any).win_pct) || 0,
+    leagueRank: (h as any).league_rank || 1,
+    madePlayoffs: (h as any).made_playoffs || false,
+    playoffResult: (h as any).playoff_result || 'Missed',
+    totalRevenue: (h as any).total_revenue || 0,
+    totalExpenses: (h as any).total_expenses || 0,
+    netIncome: (h as any).net_income || 0,
+    avgAttendance: (h as any).avg_attendance || 0,
+    mvpPlayerId: (h as any).mvp_player_id,
+    mvpPlayerName: (h as any).mvp_player_name,
+  }));
+
+  return { success: true, history: entries };
+}
+
+/**
+ * Get player's career stats
+ */
+export async function getPlayerCareerStats(playerId: string): Promise<{
+  success: boolean;
+  careerStats?: SeasonStatsSummary[];
+  error?: string;
+}> {
+  const supabase = await createClient();
+
+  const { data: player, error } = await supabase
+    .from('players')
+    .select('career_stats')
+    .eq('id', playerId)
+    .single();
+
+  if (error || !player) {
+    return { success: false, error: 'Player not found' };
+  }
+
+  const careerStats = ((player as any).career_stats as SeasonStatsSummary[]) || [];
+
+  return { success: true, careerStats };
 }

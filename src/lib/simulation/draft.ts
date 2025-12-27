@@ -591,6 +591,10 @@ export function generateDraftClass(config: DraftClassConfig): Omit<DraftProspect
     draftedByTeam: null,
     archetype: p.archetype,
     mediaRank: rankLookup.get(idx) ?? 800,
+    // Training defaults for when drafted
+    trainingFocus: 'overall' as const,
+    currentXp: 0,
+    progressionRate: 1.0,
   }));
 
   // Shuffle to randomize display order (but media rank is preserved)
