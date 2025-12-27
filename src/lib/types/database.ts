@@ -824,6 +824,51 @@ export interface Database {
         };
       };
 
+      news_stories: {
+        Row: {
+          id: string;
+          game_id: string;
+          date: string;
+          headline: string;
+          type: 'GAME_RESULT' | 'MILESTONE' | 'TRANSACTION' | 'CITY';
+          priority: 'HIGH' | 'LOW';
+          image_icon: string | null;
+          year: number;
+          game_number: number | null;
+          player_id: string | null;
+          player_name: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_id: string;
+          date: string;
+          headline: string;
+          type: 'GAME_RESULT' | 'MILESTONE' | 'TRANSACTION' | 'CITY';
+          priority: 'HIGH' | 'LOW';
+          image_icon?: string | null;
+          year: number;
+          game_number?: number | null;
+          player_id?: string | null;
+          player_name?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          game_id?: string;
+          date?: string;
+          headline?: string;
+          type?: 'GAME_RESULT' | 'MILESTONE' | 'TRANSACTION' | 'CITY';
+          priority?: 'HIGH' | 'LOW';
+          image_icon?: string | null;
+          year?: number;
+          game_number?: number | null;
+          player_id?: string | null;
+          player_name?: string | null;
+          created_at?: string;
+        };
+      };
+
       franchise_tiers: {
         Row: {
           tier: 'LOW_A' | 'HIGH_A' | 'DOUBLE_A' | 'TRIPLE_A' | 'MLB';

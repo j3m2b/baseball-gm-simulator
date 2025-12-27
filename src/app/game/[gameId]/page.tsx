@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { getGame, getPlayerRoster, getDraftState, getDraftProspects, getRecentEvents } from '@/lib/actions/game';
+import { getGame, getPlayerRoster, getDraftState, getDraftProspects, getRecentEvents, getNewsStories } from '@/lib/actions/game';
 import GameDashboard from '@/components/game/GameDashboard';
 
 interface Props {
@@ -15,10 +15,11 @@ export default async function GamePage({ params }: Props) {
     notFound();
   }
 
-  const [roster, draftState, events] = await Promise.all([
+  const [roster, draftState, events, newsStories] = await Promise.all([
     getPlayerRoster(gameId),
     getDraftState(gameId),
     getRecentEvents(gameId),
+    getNewsStories(gameId, 50),
   ]);
 
   // Get draft prospects if in draft phase
@@ -34,6 +35,7 @@ export default async function GamePage({ params }: Props) {
       draftState={draftState}
       prospects={prospects}
       events={events}
+      newsStories={newsStories}
     />
   );
 }

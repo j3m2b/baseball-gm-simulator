@@ -1,15 +1,15 @@
 'use client';
 
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency } from '@/lib/utils/format';
-
-interface Building {
-  id: number;
-  type: string;
-  state: number;
-  name: string | null;
-}
+import { constructBuilding } from '@/lib/actions/game';
+import CityMap from '../city/CityMap';
+import BuildMenu from '../city/BuildMenu';
+import DistrictBonusPanel from '../city/DistrictBonusPanel';
+import type { Building, BuildingType, Tier } from '@/lib/types';
 
 interface CityTabProps {
   city: {
@@ -23,9 +23,23 @@ interface CityTabProps {
   } | null;
   cityName: string;
   teamName: string;
+  gameId: string;
+  reserves: number;
+  currentTier: Tier;
 }
 
-export default function CityTab({ city, cityName, teamName }: CityTabProps) {
+export default function CityTab({
+  city,
+  cityName,
+  teamName,
+  gameId,
+  reserves,
+  currentTier,
+}: CityTabProps) {
+  const router = useRouter();
+  const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
+  const [isBuildMenuOpen, setIsBuildMenuOpen] = useState(false);
+
   if (!city) {
     return (
       <Card className="bg-gray-900 border-gray-800">
@@ -38,68 +52,33 @@ export default function CityTab({ city, cityName, teamName }: CityTabProps) {
 
   const buildings = (city.buildings || []) as Building[];
 
-  // Count buildings by state
-  const buildingCounts = {
-    vacant: buildings.filter(b => b.state === 0).length,
-    renovating: buildings.filter(b => b.state === 1).length,
-    open: buildings.filter(b => b.state === 2).length,
-    expanded: buildings.filter(b => b.state === 3).length,
-    landmark: buildings.filter(b => b.state === 4).length,
-  };
-
-  // Count by type
-  const typeCounts: Record<string, number> = {};
-  buildings.forEach(b => {
-    if (b.state >= 2 && b.type) {
-      typeCounts[b.type] = (typeCounts[b.type] || 0) + 1;
-    }
-  });
-
-  function getBuildingColor(state: number): string {
-    switch (state) {
-      case 0: return 'bg-gray-800 border-gray-700'; // Vacant
-      case 1: return 'bg-yellow-900/30 border-yellow-800'; // Renovating
-      case 2: return 'bg-green-900/30 border-green-800'; // Open
-      case 3: return 'bg-blue-900/30 border-blue-800'; // Expanded
-      case 4: return 'bg-amber-900/30 border-amber-700'; // Landmark
-      default: return 'bg-gray-800 border-gray-700';
+  function handleSlotClick(slotIndex: number, building: Building | null) {
+    if (!building) {
+      // Empty slot - open build menu
+      setSelectedSlot(slotIndex);
+      setIsBuildMenuOpen(true);
+    } else {
+      // Occupied slot - could show details in future
+      // For now, do nothing or show a toast
     }
   }
 
-  function getBuildingIcon(type: string, state: number): string {
-    if (state === 0) return '🏚️';
-    if (state === 1) return '🏗️';
+  async function handleConstruct(buildingType: BuildingType) {
+    if (selectedSlot === null) return;
 
-    switch (type) {
-      case 'restaurant': return '🍽️';
-      case 'bar': return '🍺';
-      case 'retail': return '🛍️';
-      case 'hotel': return '🏨';
-      case 'corporate': return '🏢';
-      default: return '🏠';
+    const result = await constructBuilding(gameId, selectedSlot, buildingType);
+
+    if (result.success) {
+      router.refresh();
+    } else {
+      // Could show error toast here
+      console.error('Construction failed:', result.error);
     }
   }
 
-  function getStateLabel(state: number): string {
-    switch (state) {
-      case 0: return 'Vacant';
-      case 1: return 'Renovating';
-      case 2: return 'Open';
-      case 3: return 'Expanded';
-      case 4: return 'Landmark';
-      default: return 'Unknown';
-    }
-  }
-
-  function getStateBadgeColor(state: number): string {
-    switch (state) {
-      case 0: return 'bg-gray-600';
-      case 1: return 'bg-yellow-600';
-      case 2: return 'bg-green-600';
-      case 3: return 'bg-blue-600';
-      case 4: return 'bg-amber-600';
-      default: return 'bg-gray-600';
-    }
+  function handleCloseBuildMenu() {
+    setIsBuildMenuOpen(false);
+    setSelectedSlot(null);
   }
 
   return (
@@ -148,136 +127,79 @@ export default function CityTab({ city, cityName, teamName }: CityTabProps) {
         </CardContent>
       </Card>
 
-      {/* Downtown District */}
-      <Card className="bg-gray-900 border-gray-800">
-        <CardHeader>
-          <div className="flex justify-between items-center">
-            <CardTitle className="text-lg">Downtown District</CardTitle>
-            <Badge className="bg-amber-600 text-white">
-              {(city.occupancy_rate * 100).toFixed(0)}% Occupied
-            </Badge>
-          </div>
-          <p className="text-sm text-gray-400 mt-2">
-            50 buildings surrounding the stadium. Win games to grow the city!
-          </p>
-        </CardHeader>
-        <CardContent>
-          {/* Building Legend */}
-          <div className="flex flex-wrap gap-3 mb-6">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-gray-800 border border-gray-700" />
-              <span className="text-xs text-gray-400">Vacant ({buildingCounts.vacant})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-yellow-900/30 border border-yellow-800" />
-              <span className="text-xs text-gray-400">Renovating ({buildingCounts.renovating})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-green-900/30 border border-green-800" />
-              <span className="text-xs text-gray-400">Open ({buildingCounts.open})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-blue-900/30 border border-blue-800" />
-              <span className="text-xs text-gray-400">Expanded ({buildingCounts.expanded})</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-amber-900/30 border border-amber-700" />
-              <span className="text-xs text-gray-400">Landmark ({buildingCounts.landmark})</span>
-            </div>
-          </div>
+      {/* District Bonus Panel */}
+      <DistrictBonusPanel buildings={buildings} />
 
-          {/* Building Grid */}
-          <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
-            {buildings.map((building) => (
-              <div
-                key={building.id}
-                className={`aspect-square rounded-lg border-2 flex items-center justify-center text-lg cursor-default transition-transform hover:scale-110 ${getBuildingColor(building.state)}`}
-                title={building.name || `${getStateLabel(building.state)} ${building.type || 'lot'}`}
-              >
-                {getBuildingIcon(building.type, building.state)}
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Business Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Active Businesses */}
-        <Card className="bg-gray-900 border-gray-800">
-          <CardHeader>
-            <CardTitle className="text-lg">Active Businesses</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {Object.entries(typeCounts).length === 0 ? (
-                <p className="text-gray-400 text-sm">No businesses open yet. Win games to grow the city!</p>
-              ) : (
-                Object.entries(typeCounts).map(([type, count]) => (
-                  <div key={type} className="flex justify-between items-center">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{getBuildingIcon(type, 2)}</span>
-                      <span className="text-gray-300 capitalize">{type}s</span>
-                    </div>
-                    <Badge variant="outline" className="text-gray-300">
-                      {count}
-                    </Badge>
-                  </div>
-                ))
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Notable Locations */}
-        <Card className="bg-gray-900 border-gray-800">
-          <CardHeader>
-            <CardTitle className="text-lg">Notable Locations</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {buildings.filter(b => b.state >= 2 && b.name).length === 0 ? (
-                <p className="text-gray-400 text-sm">No notable locations yet.</p>
-              ) : (
-                buildings
-                  .filter(b => b.state >= 2 && b.name)
-                  .sort((a, b) => b.state - a.state)
-                  .slice(0, 10)
-                  .map((building) => (
-                    <div key={building.id} className="flex justify-between items-center p-2 rounded bg-gray-800">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg">{getBuildingIcon(building.type, building.state)}</span>
-                        <span className="text-gray-300">{building.name}</span>
-                      </div>
-                      <Badge className={getStateBadgeColor(building.state)}>
-                        {getStateLabel(building.state)}
-                      </Badge>
-                    </div>
-                  ))
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      {/* City Map */}
+      <CityMap
+        buildings={buildings}
+        onSlotClick={handleSlotClick}
+        reserves={reserves}
+      />
 
       {/* City Growth Guide */}
       <Card className="bg-gray-900 border-gray-800">
         <CardHeader>
-          <CardTitle className="text-lg">City Growth</CardTitle>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <span>📈</span>
+            <span>City Growth</span>
+          </CardTitle>
         </CardHeader>
-        <CardContent className="text-sm text-gray-400 space-y-2">
+        <CardContent className="text-sm text-gray-400 space-y-3">
           <p>
             Your team's success directly impacts the city. Winning seasons bring new businesses,
             increased population, and higher property values.
           </p>
-          <ul className="list-disc list-inside space-y-1">
-            <li>Win games to increase team pride and attract investment</li>
-            <li>Higher attendance leads to more foot traffic for businesses</li>
-            <li>Making playoffs gives a major boost to city growth</li>
-            <li>Buildings upgrade through 5 stages: Vacant → Renovating → Open → Expanded → Landmark</li>
-          </ul>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+            <div className="bg-purple-900/20 rounded-lg p-3 border border-purple-800/30">
+              <h4 className="font-semibold text-purple-400 mb-1">🎭 Entertainment</h4>
+              <p className="text-xs">Restaurants & Bars boost fan pride and game attendance.</p>
+            </div>
+            <div className="bg-blue-900/20 rounded-lg p-3 border border-blue-800/30">
+              <h4 className="font-semibold text-blue-400 mb-1">💼 Commercial</h4>
+              <p className="text-xs">Retail & Hotels increase revenue and sponsorship deals.</p>
+            </div>
+            <div className="bg-red-900/20 rounded-lg p-3 border border-red-800/30">
+              <h4 className="font-semibold text-red-400 mb-1">💪 Performance</h4>
+              <p className="text-xs">Corporate offices fund player training programs.</p>
+            </div>
+          </div>
+          <div className="pt-3 border-t border-gray-800">
+            <h4 className="font-semibold text-white mb-2">Building Progression</h4>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <Badge variant="outline" className="bg-gray-800 border-gray-700">
+                🏚️ Vacant
+              </Badge>
+              <span className="text-gray-500">→</span>
+              <Badge variant="outline" className="bg-yellow-900/30 border-yellow-800">
+                🏗️ Renovating
+              </Badge>
+              <span className="text-gray-500">→</span>
+              <Badge variant="outline" className="bg-green-900/30 border-green-800">
+                Open
+              </Badge>
+              <span className="text-gray-500">→</span>
+              <Badge variant="outline" className="bg-blue-900/30 border-blue-800">
+                Expanded
+              </Badge>
+              <span className="text-gray-500">→</span>
+              <Badge variant="outline" className="bg-amber-900/30 border-amber-800">
+                ⭐ Landmark
+              </Badge>
+            </div>
+          </div>
         </CardContent>
       </Card>
+
+      {/* Build Menu Modal */}
+      <BuildMenu
+        isOpen={isBuildMenuOpen}
+        onClose={handleCloseBuildMenu}
+        slotIndex={selectedSlot ?? 0}
+        reserves={reserves}
+        currentTier={currentTier}
+        onConstruct={handleConstruct}
+      />
     </div>
   );
 }

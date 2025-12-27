@@ -17,6 +17,8 @@ import RecentEvents from './dashboard/RecentEvents';
 import GameOver from './GameOver';
 import { formatCurrency } from '@/lib/utils/format';
 
+import type { NewsStory } from '@/lib/types';
+
 interface GameDashboardProps {
   game: {
     id: string;
@@ -124,6 +126,7 @@ interface GameDashboardProps {
     expectedLosses: number;
     pythagoreanLuck: number;
   } | null;
+  newsStories?: NewsStory[];
 }
 
 export default function GameDashboard({
@@ -133,6 +136,7 @@ export default function GameDashboard({
   prospects,
   events,
   seasonRecord,
+  newsStories = [],
 }: GameDashboardProps) {
   const [activeTab, setActiveTab] = useState(() => {
     // Default to appropriate tab based on phase
@@ -367,6 +371,7 @@ export default function GameDashboard({
                   roster={roster}
                   events={events}
                   seasonRecord={seasonRecord}
+                  newsStories={newsStories}
                 />
               </TabsContent>
 
@@ -407,6 +412,9 @@ export default function GameDashboard({
                   city={city}
                   cityName={game.city_name}
                   teamName={game.team_name}
+                  gameId={game.id}
+                  reserves={franchise?.reserves ?? 0}
+                  currentTier={game.current_tier as 'LOW_A' | 'HIGH_A' | 'DOUBLE_A' | 'TRIPLE_A' | 'MLB'}
                 />
               </TabsContent>
 

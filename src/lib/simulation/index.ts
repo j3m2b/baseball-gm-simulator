@@ -153,3 +153,25 @@ export {
   type PromotionResult,
   type DebtWarning,
 } from './progression';
+
+// Dynamic Narrative Engine (Headlines & News)
+export {
+  // Game headlines
+  generateGameHeadlines,
+  generatePlayerPerformanceHeadlines,
+
+  // City & Milestone headlines
+  generateCityHeadlines,
+  generateMilestoneHeadlines,
+
+  // Transaction headlines
+  generateTransactionHeadline,
+
+  // News feed management
+  addStoriesToFeed,
+  filterStoriesByType,
+  getBreakingNews,
+  getTickerStories,
+
+  type HeadlineContext,
+} from './headline-generator';

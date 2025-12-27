@@ -10,6 +10,8 @@ import { formatCurrency } from '@/lib/utils/format';
 import RecentEvents from '../dashboard/RecentEvents';
 import LeagueLeaders from '../dashboard/LeagueLeaders';
 import TeamStandings from '../dashboard/TeamStandings';
+import NewsFeed from '../dashboard/NewsFeed';
+import type { NewsStory } from '@/lib/types';
 
 interface SeasonStats {
   // Batter stats (optional)
@@ -87,9 +89,10 @@ interface OverviewTabProps {
     duration_years?: number | null;
   }>;
   seasonRecord?: SeasonRecord | null;
+  newsStories?: NewsStory[];
 }
 
-export default function OverviewTab({ game, franchise, city, roster, events, seasonRecord }: OverviewTabProps) {
+export default function OverviewTab({ game, franchise, city, roster, events, seasonRecord, newsStories = [] }: OverviewTabProps) {
   const router = useRouter();
   const [isAdvancing, setIsAdvancing] = useState(false);
 
@@ -145,6 +148,15 @@ export default function OverviewTab({ game, franchise, city, roster, events, sea
 
   return (
     <div className="space-y-6">
+      {/* News Feed with Breaking News Ticker (Season phase only) */}
+      {newsStories.length > 0 && (
+        <NewsFeed
+          stories={newsStories}
+          maxStories={5}
+          showTicker={game.current_phase === 'season'}
+        />
+      )}
+
       {/* Narrative Events for Current Year */}
       {currentYearEvents.length > 0 && (
         <RecentEvents events={currentYearEvents} maxEvents={3} />

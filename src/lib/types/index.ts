@@ -854,6 +854,69 @@ export const PROSPECT_DISTRIBUTION = {
 };
 
 // ============================================
+// NEWS STORY TYPES (Dynamic Narrative Engine)
+// ============================================
+
+export type NewsStoryType = 'GAME_RESULT' | 'MILESTONE' | 'TRANSACTION' | 'CITY';
+
+export type NewsPriority = 'HIGH' | 'LOW';
+
+export interface NewsStory {
+  id: string;
+  date: string;           // ISO date string
+  headline: string;
+  type: NewsStoryType;
+  priority: NewsPriority;
+  imageIcon?: string;     // Optional emoji or icon identifier
+  year: number;
+  gameNumber?: number;    // For game-related stories
+  playerId?: string;      // For player-related stories
+  playerName?: string;    // Denormalized for display
+}
+
+// Player game performance for headline generation
+export interface PlayerGamePerformance {
+  playerId: string;
+  playerName: string;
+  playerType: PlayerType;
+  // Batter stats
+  hits?: number;
+  homeRuns?: number;
+  rbi?: number;
+  walks?: number;
+  strikeouts?: number;
+  // Pitcher stats
+  inningsPitched?: number;
+  earnedRuns?: number;
+  pitcherStrikeouts?: number;
+  pitcherWalks?: number;
+  hitsAllowed?: number;
+  isWin?: boolean;
+  isLoss?: boolean;
+  isSave?: boolean;
+}
+
+// Game result for headline generation
+export interface GameResultData {
+  gameNumber: number;
+  isWin: boolean;
+  isHome: boolean;
+  runsScored: number;
+  runsAllowed: number;
+  winStreak: number;
+  lossStreak: number;
+  playerPerformances: PlayerGamePerformance[];
+}
+
+// City event for headline generation
+export interface CityEventData {
+  type: 'DISTRICT_UPGRADE' | 'POPULATION_MILESTONE' | 'BUILDING_LANDMARK' | 'PRIDE_MILESTONE';
+  districtType?: DistrictType;
+  buildingName?: string;
+  milestone?: number;
+}
+
+// ============================================
 // AI TEAMS DATA
 // ============================================
 

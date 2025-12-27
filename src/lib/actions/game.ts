@@ -5,7 +5,8 @@ import { revalidatePath } from 'next/cache';
 import { generateInitialCity } from '@/lib/simulation/city-growth';
 import { generateDraftClass } from '@/lib/simulation/draft';
 import { checkForEventsWithTier, serializeEvent, applyEventEffects, type GameState as EventGameState, type NarrativeEvent } from '@/lib/simulation/events';
-import { TIER_CONFIGS, AI_TEAMS, FACILITY_CONFIGS, getRosterCapacities, type DifficultyMode, type Tier, type FacilityLevel, type RosterStatus } from '@/lib/types';
+import { generateGameHeadlines, generateCityHeadlines, generateMilestoneHeadlines, type HeadlineContext } from '@/lib/simulation/headline-generator';
+import { TIER_CONFIGS, AI_TEAMS, FACILITY_CONFIGS, BUILDING_DISTRICT_CONFIG, getRosterCapacities, type DifficultyMode, type Tier, type FacilityLevel, type RosterStatus, type NewsStory, type GameResultData, type PlayerGamePerformance, type CityEventData, type BuildingType, type Building } from '@/lib/types';
 import type { Database } from '@/lib/types/database';
 
 type GameRow = Database['public']['Tables']['games']['Row'];
@@ -15,6 +16,7 @@ type PlayerRow = Database['public']['Tables']['players']['Row'];
 type DraftRow = Database['public']['Tables']['drafts']['Row'];
 type ProspectRow = Database['public']['Tables']['draft_prospects']['Row'];
 type EventRow = Database['public']['Tables']['game_events']['Row'];
+type NewsStoryRow = Database['public']['Tables']['news_stories']['Row'];
 
 // ============================================
 // CREATE NEW GAME
@@ -1137,16 +1139,16 @@ export async function simulateSeasonBatch(
 ) {
   const supabase = await createClient();
 
-  // Get current season state
+  // Get current season state with team name
   const { data: game } = await supabase
     .from('games')
-    .select('current_year, current_tier')
+    .select('current_year, current_tier, team_name')
     .eq('id', gameId)
     .single();
 
   if (!game) return { error: 'Game not found' };
 
-  const gameData = game as Pick<GameRow, 'current_year' | 'current_tier'>;
+  const gameData = game as Pick<GameRow, 'current_year' | 'current_tier' | 'team_name'>;
 
   const { data: season } = await supabase
     .from('seasons')
@@ -1206,10 +1208,21 @@ export async function simulateSeasonBatch(
 
   // Simulate games
   const events: SeasonEvent[] = [];
+  const newsStoriesToAdd: Omit<NewsStory, 'id'>[] = [];
   let batchWins = 0;
   let batchLosses = 0;
   let batchHomeGames = 0;
   let batchAttendance = 0;
+  let currentWinStreak = 0;
+  let currentLossStreak = 0;
+
+  // Headline context for news generation
+  const headlineContext: HeadlineContext = {
+    teamName: gameData.team_name,
+    year: gameData.current_year,
+    currentWins: seasonData.wins || 0,
+    currentLosses: seasonData.losses || 0,
+  };
 
   for (let i = 0; i < actualGamesToSim; i++) {
     const gameNum = (seasonData.games_played || 0) + i + 1;
@@ -1227,8 +1240,14 @@ export async function simulateSeasonBatch(
 
     const isWin = Math.random() < clampedProb;
 
+    // Generate runs for the game (for headlines)
+    const runsScored = Math.floor(Math.random() * 10) + (isWin ? 2 : 0);
+    const runsAllowed = Math.floor(Math.random() * 8) + (isWin ? 0 : 2);
+
     if (isWin) {
       batchWins++;
+      currentWinStreak++;
+      currentLossStreak = 0;
       events.push({
         game: gameNum,
         type: 'win',
@@ -1236,11 +1255,77 @@ export async function simulateSeasonBatch(
       });
     } else {
       batchLosses++;
+      currentLossStreak++;
+      currentWinStreak = 0;
       events.push({
         game: gameNum,
         type: 'loss',
         description: `Game ${gameNum}: Loss (${isHome ? 'Home' : 'Away'})`,
       });
+    }
+
+    // Generate player performances for special moments
+    const playerPerformances: PlayerGamePerformance[] = [];
+
+    // Check for standout player performance (10% chance per game)
+    if (Math.random() < 0.10 && roster.length > 0) {
+      const standoutPlayer = roster[Math.floor(Math.random() * roster.length)];
+
+      if (standoutPlayer.player_type === 'HITTER') {
+        // Chance for multi-HR game
+        const homeRuns = Math.random() < 0.3 ? 2 : (Math.random() < 0.5 ? 1 : 0);
+        if (homeRuns >= 2) {
+          playerPerformances.push({
+            playerId: standoutPlayer.id,
+            playerName: `${standoutPlayer.first_name} ${standoutPlayer.last_name}`,
+            playerType: 'HITTER',
+            homeRuns,
+            hits: homeRuns + Math.floor(Math.random() * 2),
+            rbi: homeRuns * 2,
+          });
+        }
+      } else {
+        // Chance for high-K game
+        const strikeouts = Math.floor(Math.random() * 5) + 8;
+        if (strikeouts >= 10) {
+          playerPerformances.push({
+            playerId: standoutPlayer.id,
+            playerName: `${standoutPlayer.first_name} ${standoutPlayer.last_name}`,
+            playerType: 'PITCHER',
+            pitcherStrikeouts: strikeouts,
+            inningsPitched: 7,
+            earnedRuns: isWin ? Math.floor(Math.random() * 3) : Math.floor(Math.random() * 5) + 1,
+          });
+        }
+      }
+    }
+
+    // Generate news headlines for notable games
+    const shouldGenerateNews =
+      currentWinStreak >= 3 ||
+      currentLossStreak >= 3 ||
+      playerPerformances.length > 0 ||
+      (gameNum % 10 === 0) || // Every 10th game
+      (runsScored - runsAllowed >= 5 || runsAllowed - runsScored >= 5); // Blowouts
+
+    if (shouldGenerateNews) {
+      const gameResult: GameResultData = {
+        gameNumber: gameNum,
+        isWin,
+        isHome,
+        runsScored,
+        runsAllowed,
+        winStreak: currentWinStreak,
+        lossStreak: currentLossStreak,
+        playerPerformances,
+      };
+
+      // Update context with current record
+      headlineContext.currentWins = (seasonData.wins || 0) + batchWins;
+      headlineContext.currentLosses = (seasonData.losses || 0) + batchLosses;
+
+      const headlines = generateGameHeadlines(gameResult, headlineContext);
+      newsStoriesToAdd.push(...headlines);
     }
 
     if (isHome) {
@@ -1284,6 +1369,11 @@ export async function simulateSeasonBatch(
     return { error: 'Failed to update season' };
   }
 
+  // Store news stories
+  if (newsStoriesToAdd.length > 0) {
+    await addNewsStories(gameId, newsStoriesToAdd);
+  }
+
   revalidatePath(`/game/${gameId}`);
 
   return {
@@ -1299,6 +1389,7 @@ export async function simulateSeasonBatch(
     },
     events,
     totalGames,
+    newsGenerated: newsStoriesToAdd.length,
   };
 }
 
@@ -2161,4 +2252,387 @@ export async function upgradeFacility(gameId: string): Promise<{
   revalidatePath(`/game/${gameId}`);
 
   return { success: true, newLevel, cost };
+}
+
+// ============================================
+// NEWS STORIES (Dynamic Narrative Engine)
+// ============================================
+
+/**
+ * Get recent news stories for a game
+ */
+export async function getNewsStories(
+  gameId: string,
+  limit: number = 50
+): Promise<NewsStory[]> {
+  const supabase = await createClient();
+
+  const { data: stories, error } = await supabase
+    .from('news_stories')
+    .select('*')
+    .eq('game_id', gameId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('Error fetching news stories:', error);
+    return [];
+  }
+
+  // Map database rows to NewsStory interface
+  return (stories as NewsStoryRow[]).map(row => ({
+    id: row.id,
+    date: row.date,
+    headline: row.headline,
+    type: row.type,
+    priority: row.priority,
+    imageIcon: row.image_icon || undefined,
+    year: row.year,
+    gameNumber: row.game_number || undefined,
+    playerId: row.player_id || undefined,
+    playerName: row.player_name || undefined,
+  }));
+}
+
+/**
+ * Get breaking news (high priority stories)
+ */
+export async function getBreakingNewsStories(
+  gameId: string,
+  limit: number = 5
+): Promise<NewsStory[]> {
+  const supabase = await createClient();
+
+  const { data: stories, error } = await supabase
+    .from('news_stories')
+    .select('*')
+    .eq('game_id', gameId)
+    .eq('priority', 'HIGH')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error('Error fetching breaking news:', error);
+    return [];
+  }
+
+  return (stories as NewsStoryRow[]).map(row => ({
+    id: row.id,
+    date: row.date,
+    headline: row.headline,
+    type: row.type,
+    priority: row.priority,
+    imageIcon: row.image_icon || undefined,
+    year: row.year,
+    gameNumber: row.game_number || undefined,
+    playerId: row.player_id || undefined,
+    playerName: row.player_name || undefined,
+  }));
+}
+
+/**
+ * Add a news story to the database
+ */
+export async function addNewsStory(
+  gameId: string,
+  story: Omit<NewsStory, 'id'>
+): Promise<{ success: boolean; error?: string; story?: NewsStory }> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('news_stories')
+    .insert({
+      game_id: gameId,
+      date: story.date,
+      headline: story.headline,
+      type: story.type,
+      priority: story.priority,
+      image_icon: story.imageIcon || null,
+      year: story.year,
+      game_number: story.gameNumber || null,
+      player_id: story.playerId || null,
+      player_name: story.playerName || null,
+    } as any)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error adding news story:', error);
+    return { success: false, error: 'Failed to add news story' };
+  }
+
+  const row = data as NewsStoryRow;
+
+  return {
+    success: true,
+    story: {
+      id: row.id,
+      date: row.date,
+      headline: row.headline,
+      type: row.type,
+      priority: row.priority,
+      imageIcon: row.image_icon || undefined,
+      year: row.year,
+      gameNumber: row.game_number || undefined,
+      playerId: row.player_id || undefined,
+      playerName: row.player_name || undefined,
+    },
+  };
+}
+
+/**
+ * Add multiple news stories to the database
+ */
+export async function addNewsStories(
+  gameId: string,
+  stories: Omit<NewsStory, 'id'>[]
+): Promise<{ success: boolean; count: number }> {
+  if (stories.length === 0) {
+    return { success: true, count: 0 };
+  }
+
+  const supabase = await createClient();
+
+  const insertData = stories.map(story => ({
+    game_id: gameId,
+    date: story.date,
+    headline: story.headline,
+    type: story.type,
+    priority: story.priority,
+    image_icon: story.imageIcon || null,
+    year: story.year,
+    game_number: story.gameNumber || null,
+    player_id: story.playerId || null,
+    player_name: story.playerName || null,
+  }));
+
+  const { error } = await supabase
+    .from('news_stories')
+    .insert(insertData as any);
+
+  if (error) {
+    console.error('Error adding news stories:', error);
+    return { success: false, count: 0 };
+  }
+
+  return { success: true, count: stories.length };
+}
+
+/**
+ * Generate and store news headlines from a simulated game
+ */
+export async function generateGameNews(
+  gameId: string,
+  gameResult: GameResultData,
+  context: HeadlineContext
+): Promise<NewsStory[]> {
+  // Generate headlines using the headline generator
+  const stories = generateGameHeadlines(gameResult, context);
+
+  // Store in database
+  if (stories.length > 0) {
+    await addNewsStories(gameId, stories);
+  }
+
+  return stories;
+}
+
+/**
+ * Generate and store city news headlines
+ */
+export async function generateCityNews(
+  gameId: string,
+  cityEvent: CityEventData,
+  year: number
+): Promise<NewsStory[]> {
+  const stories = generateCityHeadlines(cityEvent, year);
+
+  if (stories.length > 0) {
+    await addNewsStories(gameId, stories);
+  }
+
+  return stories;
+}
+
+/**
+ * Clean up old news stories to maintain the 50-story limit
+ */
+export async function cleanupOldNews(gameId: string): Promise<void> {
+  const supabase = await createClient();
+
+  // Get the ID of the 50th newest story
+  const { data: cutoffStory } = await supabase
+    .from('news_stories')
+    .select('id, created_at')
+    .eq('game_id', gameId)
+    .order('created_at', { ascending: false })
+    .range(49, 49)
+    .single();
+
+  if (!cutoffStory) return;
+
+  // Delete all stories older than the cutoff
+  await supabase
+    .from('news_stories')
+    .delete()
+    .eq('game_id', gameId)
+    .lt('created_at', (cutoffStory as { created_at: string }).created_at);
+}
+
+// ============================================
+// CITY BUILDING CONSTRUCTION
+// ============================================
+
+// Building costs
+const BUILDING_COSTS: Record<BuildingType, number> = {
+  restaurant: 50000,
+  bar: 75000,
+  retail: 40000,
+  hotel: 200000,
+  corporate: 150000,
+};
+
+/**
+ * Construct a new building in an empty city slot
+ */
+export async function constructBuilding(
+  gameId: string,
+  slotIndex: number,
+  buildingType: BuildingType
+): Promise<{
+  success: boolean;
+  error?: string;
+  building?: Building;
+}> {
+  const supabase = await createClient();
+
+  // Get current city and franchise state
+  const { data: cityData } = await supabase
+    .from('city_states')
+    .select('buildings')
+    .eq('game_id', gameId)
+    .single();
+
+  const { data: franchiseData } = await supabase
+    .from('current_franchise')
+    .select('reserves')
+    .eq('game_id', gameId)
+    .single();
+
+  if (!cityData || !franchiseData) {
+    return { success: false, error: 'City or franchise data not found' };
+  }
+
+  const cityDataTyped = cityData as { buildings: unknown };
+  const franchiseDataTyped = franchiseData as { reserves: number };
+
+  const buildings = (cityDataTyped.buildings || []) as Building[];
+  const reserves = franchiseDataTyped.reserves;
+  const cost = BUILDING_COSTS[buildingType];
+
+  // Validate slot index
+  if (slotIndex < 0 || slotIndex >= buildings.length) {
+    return { success: false, error: 'Invalid slot index' };
+  }
+
+  // Check if slot is vacant
+  const existingBuilding = buildings[slotIndex];
+  if (existingBuilding.state !== 0) {
+    return { success: false, error: 'This slot is already occupied' };
+  }
+
+  // Check if player can afford
+  if (reserves < cost) {
+    return {
+      success: false,
+      error: `Insufficient funds. Need ${cost.toLocaleString()}, have ${reserves.toLocaleString()}`,
+    };
+  }
+
+  // Get district config for this building type
+  const districtConfig = BUILDING_DISTRICT_CONFIG[buildingType];
+
+  // Update the building
+  const updatedBuilding: Building = {
+    ...existingBuilding,
+    type: buildingType,
+    state: 1, // Under renovation
+    district: districtConfig.district,
+  };
+
+  // Update buildings array
+  const updatedBuildings = [...buildings];
+  updatedBuildings[slotIndex] = updatedBuilding;
+
+  // Update database
+  const [{ error: cityError }, { error: franchiseError }] = await Promise.all([
+    supabase
+      .from('city_states')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({ buildings: updatedBuildings })
+      .eq('game_id', gameId),
+    supabase
+      .from('current_franchise')
+      // @ts-expect-error - Supabase types not inferred without database connection
+      .update({ reserves: reserves - cost })
+      .eq('game_id', gameId),
+  ]);
+
+  if (cityError || franchiseError) {
+    console.error('Error constructing building:', cityError || franchiseError);
+    return { success: false, error: 'Failed to construct building' };
+  }
+
+  // Create a game event for the construction
+  await supabase.from('game_events').insert({
+    game_id: gameId,
+    year: 1, // Will be updated with current year
+    type: 'city',
+    title: `New ${buildingType.charAt(0).toUpperCase() + buildingType.slice(1)} Under Construction`,
+    description: `Construction has begun on a new ${buildingType} in the ${districtConfig.district.toLowerCase()} district. Cost: $${cost.toLocaleString()}.`,
+    is_read: false,
+  } as any);
+
+  revalidatePath(`/game/${gameId}`);
+
+  return {
+    success: true,
+    building: updatedBuilding,
+  };
+}
+
+/**
+ * Get city state with buildings
+ */
+export async function getCityState(gameId: string): Promise<{
+  buildings: Building[];
+  population: number;
+  teamPride: number;
+  occupancyRate: number;
+} | null> {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from('city_states')
+    .select('buildings, population, team_pride, occupancy_rate')
+    .eq('game_id', gameId)
+    .single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  const typedData = data as {
+    buildings: unknown;
+    population: number;
+    team_pride: number;
+    occupancy_rate: number;
+  };
+
+  return {
+    buildings: (typedData.buildings || []) as Building[],
+    population: typedData.population,
+    teamPride: typedData.team_pride,
+    occupancyRate: typedData.occupancy_rate,
+  };
 }
