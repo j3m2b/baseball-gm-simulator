@@ -11,6 +11,13 @@ import type {
   CityGrowthResult,
   GameEvent,
   Tier,
+  DistrictType,
+  DistrictBonuses,
+} from '@/lib/types';
+
+import {
+  BUILDING_DISTRICT_CONFIG,
+  DEFAULT_DISTRICT_BONUSES,
 } from '@/lib/types';
 
 // ============================================
@@ -85,6 +92,111 @@ const CITY_CONFIG = {
     mediaEventBonus: 5,
   },
 };
+
+// ============================================
+// DISTRICT BONUS CALCULATIONS
+// ============================================
+
+/**
+ * Get the bonus multiplier for a building based on its state
+ * Only buildings with state >= 2 (Open) provide bonuses
+ */
+function getBuildingBonus(building: Building): number {
+  const config = BUILDING_DISTRICT_CONFIG[building.type];
+
+  switch (building.state) {
+    case 2: // Open
+      return config.baseBonus;
+    case 3: // Expanded
+      return config.expandedBonus;
+    case 4: // Landmark
+      return config.landmarkBonus;
+    default:
+      return 0; // Vacant or Under Renovation provide no bonus
+  }
+}
+
+/**
+ * Calculate district bonuses from all active buildings
+ *
+ * @param buildings - Array of all buildings in the city
+ * @returns DistrictBonuses object with multipliers for each bonus type
+ *
+ * Example:
+ * - 5 open restaurants (+2% each) = +10% fanMult = 1.10
+ * - 3 expanded hotels (+8% each) = +24% incomeMult = 1.24
+ * - 1 landmark corporate (+12%) = +12% trainingMult = 1.12
+ */
+export function calculateCityBonuses(buildings: Building[]): DistrictBonuses {
+  const bonuses: DistrictBonuses = { ...DEFAULT_DISTRICT_BONUSES };
+
+  for (const building of buildings) {
+    // Only count buildings that are at least Open (state >= 2)
+    if (building.state < 2) continue;
+
+    const bonus = getBuildingBonus(building);
+    const config = BUILDING_DISTRICT_CONFIG[building.type];
+
+    // Apply bonus to the appropriate multiplier based on district type
+    switch (config.district) {
+      case 'COMMERCIAL':
+        bonuses.incomeMult += bonus;
+        break;
+      case 'ENTERTAINMENT':
+        bonuses.fanMult += bonus;
+        break;
+      case 'PERFORMANCE':
+        bonuses.trainingMult += bonus;
+        break;
+    }
+  }
+
+  // Cap bonuses at reasonable maximums (e.g., 3x max)
+  bonuses.incomeMult = Math.min(3.0, bonuses.incomeMult);
+  bonuses.fanMult = Math.min(3.0, bonuses.fanMult);
+  bonuses.trainingMult = Math.min(3.0, bonuses.trainingMult);
+
+  return bonuses;
+}
+
+/**
+ * Get a summary of district contributions for display purposes
+ */
+export function getDistrictSummary(buildings: Building[]): {
+  commercial: { count: number; bonus: number };
+  entertainment: { count: number; bonus: number };
+  performance: { count: number; bonus: number };
+} {
+  const summary = {
+    commercial: { count: 0, bonus: 0 },
+    entertainment: { count: 0, bonus: 0 },
+    performance: { count: 0, bonus: 0 },
+  };
+
+  for (const building of buildings) {
+    if (building.state < 2) continue;
+
+    const config = BUILDING_DISTRICT_CONFIG[building.type];
+    const bonus = getBuildingBonus(building);
+
+    switch (config.district) {
+      case 'COMMERCIAL':
+        summary.commercial.count++;
+        summary.commercial.bonus += bonus;
+        break;
+      case 'ENTERTAINMENT':
+        summary.entertainment.count++;
+        summary.entertainment.bonus += bonus;
+        break;
+      case 'PERFORMANCE':
+        summary.performance.count++;
+        summary.performance.bonus += bonus;
+        break;
+    }
+  }
+
+  return summary;
+}
 
 // ============================================
 // BUILDING NAME GENERATION
@@ -211,6 +323,7 @@ export interface BuildingUpgrade {
   newState: BuildingState;
   newName?: string;
   newType?: BuildingType;
+  newDistrict?: DistrictType;
 }
 
 /**
@@ -247,11 +360,13 @@ export function determineBuildingUpgrades(
     for (let i = 0; i < toRenovate; i++) {
       const building = vacantBuildings[i];
       const newType = selectBuildingType(tier);
+      const config = BUILDING_DISTRICT_CONFIG[newType];
       upgrades.push({
         buildingId: building.id,
         previousState: 0,
         newState: 1,
         newType,
+        newDistrict: config.district,
       });
       remainingUpgrades--;
     }
@@ -590,7 +705,13 @@ export function simulateCityGrowth(input: CityGrowthInput): CityGrowthResult {
     year
   );
 
-  // 4. Calculate updated city metrics
+  // 4. Apply building upgrades to get updated building list
+  const updatedBuildings = applyBuildingUpgrades(currentState.buildings, buildingUpgrades, year);
+
+  // 5. Calculate district bonuses from all active buildings
+  const districtBonuses = calculateCityBonuses(updatedBuildings);
+
+  // 6. Calculate updated city metrics
   const metricsUpdate = calculateCityMetrics(
     currentState,
     successScore,
@@ -602,7 +723,7 @@ export function simulateCityGrowth(input: CityGrowthInput): CityGrowthResult {
     winPct
   );
 
-  // 5. Generate narrative events
+  // 7. Generate narrative events
   const events = generateCityEvents(
     buildingUpgrades,
     metricsUpdate,
@@ -620,10 +741,43 @@ export function simulateCityGrowth(input: CityGrowthInput): CityGrowthResult {
     newUnemploymentRate: metricsUpdate.unemploymentRate,
     newPride: metricsUpdate.teamPride,
     newRecognition: metricsUpdate.nationalRecognition,
+    districtBonuses,
 
     buildingChanges: buildingUpgrades,
     events,
   };
+}
+
+/**
+ * Apply building upgrades to create updated building list
+ */
+function applyBuildingUpgrades(
+  buildings: Building[],
+  upgrades: BuildingUpgrade[],
+  year: number
+): Building[] {
+  const updatedBuildings = buildings.map(b => ({ ...b }));
+
+  for (const upgrade of upgrades) {
+    const building = updatedBuildings.find(b => b.id === upgrade.buildingId);
+    if (building) {
+      building.state = upgrade.newState;
+      if (upgrade.newType) {
+        building.type = upgrade.newType;
+      }
+      if (upgrade.newDistrict) {
+        building.district = upgrade.newDistrict;
+      }
+      if (upgrade.newName) {
+        building.name = upgrade.newName;
+      }
+      if (upgrade.newState >= 2 && !building.yearOpened) {
+        building.yearOpened = year;
+      }
+    }
+  }
+
+  return updatedBuildings;
 }
 
 // ============================================
@@ -636,6 +790,7 @@ export function simulateCityGrowth(input: CityGrowthInput): CityGrowthResult {
  */
 export function generateInitialCity(): Building[] {
   const buildings: Building[] = [];
+  const existingNames: string[] = [];
 
   for (let i = 0; i < CITY_CONFIG.TOTAL_BUILDINGS; i++) {
     // 60% vacant, 30% state 1-2, 10% state 2-3
@@ -653,13 +808,22 @@ export function generateInitialCity(): Building[] {
     }
 
     const type = state > 0 ? selectBuildingType('LOW_A') : 'retail';
+    const config = BUILDING_DISTRICT_CONFIG[type];
+
+    // Generate name for open buildings
+    let name: string | null = null;
+    if (state >= 2) {
+      name = generateBuildingName(type, existingNames);
+      existingNames.push(name);
+    }
 
     buildings.push({
       id: i,
       type,
       state,
-      name: null,  // Names assigned when state reaches 2
-      yearOpened: null,
+      name,
+      yearOpened: state >= 2 ? 1 : null,
+      district: config.district,
     });
   }
 

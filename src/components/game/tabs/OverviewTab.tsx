@@ -8,6 +8,37 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { formatCurrency } from '@/lib/utils/format';
 import RecentEvents from '../dashboard/RecentEvents';
+import LeagueLeaders from '../dashboard/LeagueLeaders';
+import TeamStandings from '../dashboard/TeamStandings';
+
+interface SeasonStats {
+  // Batter stats (optional)
+  games?: number;
+  atBats?: number;
+  hits?: number;
+  homeRuns?: number;
+  rbi?: number;
+  battingAvg?: number;
+  ops?: number;
+  war?: number;
+  // Pitcher stats (optional)
+  wins?: number;
+  losses?: number;
+  era?: number;
+  strikeouts?: number;
+  inningsPitched?: number;
+}
+
+interface SeasonRecord {
+  wins: number;
+  losses: number;
+  winPct: number;
+  divisionRank: number;
+  gamesBack: number;
+  expectedWins: number;
+  expectedLosses: number;
+  pythagoreanLuck: number;
+}
 
 interface OverviewTabProps {
   game: {
@@ -37,9 +68,13 @@ interface OverviewTabProps {
   } | null;
   roster: Array<{
     id: string;
+    first_name: string;
+    last_name: string;
     current_rating: number;
     potential: number;
     position: string;
+    player_type: string;
+    season_stats?: SeasonStats | null;
   }>;
   events: Array<{
     id: string;
@@ -51,9 +86,10 @@ interface OverviewTabProps {
     effects?: unknown;
     duration_years?: number | null;
   }>;
+  seasonRecord?: SeasonRecord | null;
 }
 
-export default function OverviewTab({ game, franchise, city, roster, events }: OverviewTabProps) {
+export default function OverviewTab({ game, franchise, city, roster, events, seasonRecord }: OverviewTabProps) {
   const router = useRouter();
   const [isAdvancing, setIsAdvancing] = useState(false);
 
@@ -157,6 +193,19 @@ export default function OverviewTab({ game, franchise, city, roster, events }: O
             </div>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Season Record & Team Leaders Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Team Standings with Pythagorean Luck */}
+        <TeamStandings
+          seasonRecord={seasonRecord || null}
+          teamName={game.team_name}
+          tier={game.current_tier}
+        />
+
+        {/* League Leaders */}
+        <LeagueLeaders roster={roster} />
       </div>
 
       {/* Main Content Grid */}

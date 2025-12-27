@@ -18,6 +18,24 @@ import { useRouter } from 'next/navigation';
 import { FACILITY_CONFIGS, type FacilityLevel } from '@/lib/types';
 import { ArrowUp, ArrowDown } from 'lucide-react';
 
+interface SeasonStats {
+  // Batter stats (optional)
+  games?: number;
+  atBats?: number;
+  hits?: number;
+  homeRuns?: number;
+  rbi?: number;
+  battingAvg?: number;
+  ops?: number;
+  war?: number;
+  // Pitcher stats (optional)
+  wins?: number;
+  losses?: number;
+  era?: number;
+  strikeouts?: number;
+  inningsPitched?: number;
+}
+
 interface Player {
   id: string;
   first_name: string;
@@ -31,6 +49,7 @@ interface Player {
   tier: string;
   salary: number;
   roster_status: 'ACTIVE' | 'RESERVE';
+  season_stats?: SeasonStats | null;
 }
 
 interface RosterTabProps {
@@ -119,18 +138,43 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
     }).format(amount);
   }
 
+  // Format batting average as .305 (3 decimals, no leading zero)
+  function formatAvg(avg: number): string {
+    return avg.toFixed(3).replace(/^0/, '');
+  }
+
+  // Format ERA as 3.45 (2 decimals)
+  function formatERA(era: number): string {
+    return era.toFixed(2);
+  }
+
+  // Check if player has batter stats
+  function hasBatterStats(stats: SeasonStats): boolean {
+    return stats.battingAvg !== undefined;
+  }
+
+  // Check if player has pitcher stats
+  function hasPitcherStats(stats: SeasonStats): boolean {
+    return stats.era !== undefined;
+  }
+
+  // Check if any players have season stats
+  const hasSeasonStats = roster.some(p => p.season_stats);
+
   const PlayerTable = ({
     players,
     title,
     rosterType,
     canMoveUp,
     canMoveDown,
+    isPitcher,
   }: {
     players: Player[];
     title: string;
     rosterType: 'ACTIVE' | 'RESERVE';
     canMoveUp: boolean;
     canMoveDown: boolean;
+    isPitcher: boolean;
   }) => (
     <div className="space-y-2">
       <h4 className="text-sm font-medium text-gray-400">{title} ({players.length})</h4>
@@ -147,71 +191,129 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
               <TableHead className="text-gray-400">Pos</TableHead>
               <TableHead className="text-gray-400">Age</TableHead>
               <TableHead className="text-gray-400 text-center">Rating</TableHead>
-              <TableHead className="text-gray-400 text-center">Potential</TableHead>
+              {/* Show stats columns if season stats exist */}
+              {hasSeasonStats && !isPitcher && (
+                <>
+                  <TableHead className="text-gray-400 text-center">AVG</TableHead>
+                  <TableHead className="text-gray-400 text-center">HR</TableHead>
+                  <TableHead className="text-gray-400 text-center">RBI</TableHead>
+                  <TableHead className="text-gray-400 text-center">OPS</TableHead>
+                </>
+              )}
+              {hasSeasonStats && isPitcher && (
+                <>
+                  <TableHead className="text-gray-400 text-center">W-L</TableHead>
+                  <TableHead className="text-gray-400 text-center">ERA</TableHead>
+                  <TableHead className="text-gray-400 text-center">SO</TableHead>
+                </>
+              )}
+              {!hasSeasonStats && (
+                <TableHead className="text-gray-400 text-center">Potential</TableHead>
+              )}
               <TableHead className="text-gray-400 text-right">Salary</TableHead>
               <TableHead className="text-gray-400">Status</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {players.map((player) => (
-              <TableRow
-                key={player.id}
-                className="border-gray-800 hover:bg-gray-800/50"
-              >
-                <TableCell>
-                  {rosterType === 'ACTIVE' && canMoveDown && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0 text-orange-500 hover:text-orange-400 hover:bg-orange-500/10"
-                      onClick={() => handleMovePlayer(player.id, 'RESERVE')}
-                      disabled={movingPlayerId === player.id}
-                      title="Send to Reserve"
-                    >
-                      <ArrowDown className="h-4 w-4" />
-                    </Button>
-                  )}
-                  {rosterType === 'RESERVE' && canMoveUp && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0 text-green-500 hover:text-green-400 hover:bg-green-500/10"
-                      onClick={() => handleMovePlayer(player.id, 'ACTIVE')}
-                      disabled={movingPlayerId === player.id}
-                      title="Call Up to Active"
-                    >
-                      <ArrowUp className="h-4 w-4" />
-                    </Button>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <div>
-                    <div className="font-medium text-white">
-                      {player.first_name} {player.last_name}
+            {players.map((player) => {
+              const stats = player.season_stats;
+              const playerHasBatterStats = stats && hasBatterStats(stats);
+              const playerHasPitcherStats = stats && hasPitcherStats(stats);
+
+              return (
+                <TableRow
+                  key={player.id}
+                  className="border-gray-800 hover:bg-gray-800/50"
+                >
+                  <TableCell>
+                    {rosterType === 'ACTIVE' && canMoveDown && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-orange-500 hover:text-orange-400 hover:bg-orange-500/10"
+                        onClick={() => handleMovePlayer(player.id, 'RESERVE')}
+                        disabled={movingPlayerId === player.id}
+                        title="Send to Reserve"
+                      >
+                        <ArrowDown className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {rosterType === 'RESERVE' && canMoveUp && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-green-500 hover:text-green-400 hover:bg-green-500/10"
+                        onClick={() => handleMovePlayer(player.id, 'ACTIVE')}
+                        disabled={movingPlayerId === player.id}
+                        title="Call Up to Active"
+                      >
+                        <ArrowUp className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <div>
+                      <div className="font-medium text-white">
+                        {player.first_name} {player.last_name}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {formatTier(player.tier)}
+                      </div>
                     </div>
-                    <div className="text-xs text-gray-500">
-                      {formatTier(player.tier)}
-                    </div>
-                  </div>
-                </TableCell>
-                <TableCell className="text-gray-300">{player.position}</TableCell>
-                <TableCell className="text-gray-300">{player.age}</TableCell>
-                <TableCell className="text-center">
-                  <span className={`font-mono font-bold ${getRatingColor(player.current_rating)}`}>
-                    {player.current_rating}
-                  </span>
-                </TableCell>
-                <TableCell className="text-center">
-                  <span className={`font-mono ${getRatingColor(player.potential)}`}>
-                    {player.potential}
-                  </span>
-                </TableCell>
-                <TableCell className="text-right text-gray-300">
-                  {formatCurrency(player.salary)}
-                </TableCell>
-                <TableCell>{getStatusBadge(player)}</TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell className="text-gray-300">{player.position}</TableCell>
+                  <TableCell className="text-gray-300">{player.age}</TableCell>
+                  <TableCell className="text-center">
+                    <span className={`font-mono font-bold ${getRatingColor(player.current_rating)}`}>
+                      {player.current_rating}
+                    </span>
+                  </TableCell>
+                  {/* Batter stats columns */}
+                  {hasSeasonStats && !isPitcher && (
+                    <>
+                      <TableCell className="text-center font-mono text-white">
+                        {playerHasBatterStats && stats?.battingAvg !== undefined ? formatAvg(stats.battingAvg) : '-'}
+                      </TableCell>
+                      <TableCell className="text-center font-mono text-white">
+                        {playerHasBatterStats && stats?.homeRuns !== undefined ? stats.homeRuns : '-'}
+                      </TableCell>
+                      <TableCell className="text-center font-mono text-white">
+                        {playerHasBatterStats && stats?.rbi !== undefined ? stats.rbi : '-'}
+                      </TableCell>
+                      <TableCell className="text-center font-mono text-amber-400">
+                        {playerHasBatterStats && stats?.ops !== undefined ? formatAvg(stats.ops) : '-'}
+                      </TableCell>
+                    </>
+                  )}
+                  {/* Pitcher stats columns */}
+                  {hasSeasonStats && isPitcher && (
+                    <>
+                      <TableCell className="text-center font-mono text-white">
+                        {playerHasPitcherStats && stats ? `${stats.wins ?? 0}-${stats.losses ?? 0}` : '-'}
+                      </TableCell>
+                      <TableCell className="text-center font-mono text-white">
+                        {playerHasPitcherStats && stats?.era !== undefined ? formatERA(stats.era) : '-'}
+                      </TableCell>
+                      <TableCell className="text-center font-mono text-white">
+                        {playerHasPitcherStats && stats?.strikeouts !== undefined ? stats.strikeouts : '-'}
+                      </TableCell>
+                    </>
+                  )}
+                  {/* Show potential when no stats exist */}
+                  {!hasSeasonStats && (
+                    <TableCell className="text-center">
+                      <span className={`font-mono ${getRatingColor(player.potential)}`}>
+                        {player.potential}
+                      </span>
+                    </TableCell>
+                  )}
+                  <TableCell className="text-right text-gray-300">
+                    {formatCurrency(player.salary)}
+                  </TableCell>
+                  <TableCell>{getStatusBadge(player)}</TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}
@@ -310,6 +412,7 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
             rosterType="ACTIVE"
             canMoveUp={false}
             canMoveDown={canMoveToReserve}
+            isPitcher={true}
           />
           <PlayerTable
             players={activeHitters}
@@ -317,6 +420,7 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
             rosterType="ACTIVE"
             canMoveUp={false}
             canMoveDown={canMoveToReserve}
+            isPitcher={false}
           />
           {activePlayers.length === 0 && (
             <p className="text-center text-gray-400 py-8">
@@ -344,6 +448,7 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
             rosterType="RESERVE"
             canMoveUp={canMoveToActive}
             canMoveDown={false}
+            isPitcher={true}
           />
           <PlayerTable
             players={reserveHitters}
@@ -351,6 +456,7 @@ export default function RosterTab({ roster, gameId, facilityLevel = 0, reserves 
             rosterType="RESERVE"
             canMoveUp={canMoveToActive}
             canMoveDown={false}
+            isPitcher={false}
           />
           {reservePlayers.length === 0 && (
             <p className="text-center text-gray-400 py-8">

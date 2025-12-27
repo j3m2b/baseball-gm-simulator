@@ -1,6 +1,7 @@
 // ============================================
 // Season Outcome Simulation Engine
 // Simulates season results based on team strength
+// Uses advanced sabermetric formulas for realism
 // ============================================
 
 import type {
@@ -15,6 +16,12 @@ import {
   calculateRosterGrowth,
   simulateInjury,
 } from './player-development';
+import {
+  pythagoreanExpectation,
+  calculateExpectedRuns,
+  randomNormalBounded,
+  type TeamOffenseDefense,
+} from './math-engine';
 
 // ============================================
 // CONFIGURATION
@@ -49,25 +56,26 @@ const SEASON_CONFIG = {
 // ============================================
 
 /**
- * Calculate a team's overall strength based on roster
+ * Calculate a team's offense and defense ratings for Pythagorean Expectation
+ * Offense = ability to score runs (hitter ratings)
+ * Defense = ability to prevent runs (pitcher ratings)
  */
-export function calculateTeamStrength(
+export function calculateTeamOffenseDefense(
   players: Player[],
   hittingCoachSkill: number,
   pitchingCoachSkill: number
-): number {
-  if (players.length === 0) return 30; // Minimum strength
-
-  // Calculate average rating of active roster
+): TeamOffenseDefense {
   const activePlayers = players.filter(p => p.isOnRoster && !p.isInjured);
-  if (activePlayers.length === 0) return 30;
 
-  const avgRating = activePlayers.reduce((sum, p) => sum + p.currentRating, 0) / activePlayers.length;
+  if (activePlayers.length === 0) {
+    return { offense: 40, defense: 40 }; // Minimum ratings
+  }
 
-  // Split by position type for weighted calculation
+  // Split by position type
   const hitters = activePlayers.filter(p => p.playerType === 'HITTER');
   const pitchers = activePlayers.filter(p => p.playerType === 'PITCHER');
 
+  // Calculate average ratings
   const avgHitterRating = hitters.length > 0
     ? hitters.reduce((sum, p) => sum + p.currentRating, 0) / hitters.length
     : 40;
@@ -76,26 +84,38 @@ export function calculateTeamStrength(
     ? pitchers.reduce((sum, p) => sum + p.currentRating, 0) / pitchers.length
     : 40;
 
-  // Calculate coaching bonus
-  const coachingBonus =
-    ((hittingCoachSkill - 50) / 30) * SEASON_CONFIG.WEIGHTS.COACHING * 10 +
-    ((pitchingCoachSkill - 50) / 30) * SEASON_CONFIG.WEIGHTS.COACHING * 10;
+  // Calculate coaching bonuses
+  const hittingCoachBonus = ((hittingCoachSkill - 50) / 30) * SEASON_CONFIG.WEIGHTS.COACHING * 10;
+  const pitchingCoachBonus = ((pitchingCoachSkill - 50) / 30) * SEASON_CONFIG.WEIGHTS.COACHING * 10;
 
-  // Calculate morale bonus
+  // Calculate morale bonus (affects both offense and defense)
   const avgMorale = activePlayers.reduce((sum, p) => sum + p.morale, 0) / activePlayers.length;
   const moraleBonus = ((avgMorale - 50) / 50) * SEASON_CONFIG.WEIGHTS.MORALE * 5;
 
-  // Final strength: weighted average of ratings + bonuses
-  // Pitching and hitting are equally weighted (50/50)
-  const baseStrength = (avgHitterRating * 0.5) + (avgPitcherRating * 0.5);
-
-  return baseStrength + coachingBonus + moraleBonus;
+  return {
+    offense: Math.max(20, Math.min(80, avgHitterRating + hittingCoachBonus + moraleBonus)),
+    defense: Math.max(20, Math.min(80, avgPitcherRating + pitchingCoachBonus + moraleBonus)),
+  };
 }
 
 /**
- * Calculate AI team strength for the season
+ * Calculate a team's overall strength based on roster
+ * (Legacy function for backwards compatibility)
  */
-export function calculateAITeamStrength(aiTeam: AITeam, tier: Tier): number {
+export function calculateTeamStrength(
+  players: Player[],
+  hittingCoachSkill: number,
+  pitchingCoachSkill: number
+): number {
+  const { offense, defense } = calculateTeamOffenseDefense(players, hittingCoachSkill, pitchingCoachSkill);
+  // Combined strength is the average of offense and defense
+  return (offense + defense) / 2;
+}
+
+/**
+ * Calculate AI team offense and defense for Pythagorean Expectation
+ */
+export function calculateAITeamOffenseDefense(aiTeam: AITeam, tier: Tier): TeamOffenseDefense {
   // Base strength from team configuration
   const baseStrength = aiTeam.baseStrength;
 
@@ -109,48 +129,93 @@ export function calculateAITeamStrength(aiTeam: AITeam, tier: Tier): number {
   }[tier];
 
   // Add random variance based on team's variance multiplier
-  const variance = (Math.random() * 2 - 1) * 5 * aiTeam.varianceMultiplier;
+  const offenseVariance = randomNormalBounded(0, 3 * aiTeam.varianceMultiplier, -8, 8);
+  const defenseVariance = randomNormalBounded(0, 3 * aiTeam.varianceMultiplier, -8, 8);
 
-  return baseStrength + tierModifier + variance;
+  // Some teams are offense-heavy, some defense-heavy
+  const offenseBias = (Math.random() - 0.5) * 10;
+
+  const baseRating = baseStrength + tierModifier;
+
+  return {
+    offense: Math.max(25, Math.min(75, baseRating + offenseBias + offenseVariance)),
+    defense: Math.max(25, Math.min(75, baseRating - offenseBias + defenseVariance)),
+  };
+}
+
+/**
+ * Calculate AI team strength for the season (legacy compatibility)
+ */
+export function calculateAITeamStrength(aiTeam: AITeam, tier: Tier): number {
+  const { offense, defense } = calculateAITeamOffenseDefense(aiTeam, tier);
+  return (offense + defense) / 2;
 }
 
 // ============================================
 // WIN PERCENTAGE CALCULATION
+// Uses Pythagorean Expectation for realistic win probability
 // ============================================
 
 /**
+ * Calculate expected win percentage using Pythagorean Expectation
+ * This formula was developed by Bill James and is widely used in sabermetrics
+ *
+ * Formula: Win% = RS^exp / (RS^exp + RA^exp)
+ * Where RS = runs scored, RA = runs allowed
+ */
+export function calculateExpectedWinPctPythagorean(
+  team: TeamOffenseDefense,
+  opponent: TeamOffenseDefense
+): number {
+  // Use the Pythagorean Expectation formula from math-engine
+  const winPct = pythagoreanExpectation(
+    team.offense,
+    team.defense,
+    opponent.offense,
+    opponent.defense,
+    2.0  // Bill James' original exponent
+  );
+
+  // Clamp between .250 and .750 for realistic bounds
+  return Math.max(0.250, Math.min(0.750, winPct));
+}
+
+/**
  * Calculate expected win percentage based on strength differential
- * Uses a logistic function to map strength difference to win probability
+ * (Legacy function - now uses Pythagorean Expectation internally)
  */
 export function calculateExpectedWinPct(
   teamStrength: number,
   avgOpponentStrength: number
 ): number {
-  const strengthDiff = teamStrength - avgOpponentStrength;
+  // Convert single strength values to offense/defense (assume balanced)
+  const team: TeamOffenseDefense = {
+    offense: teamStrength,
+    defense: teamStrength,
+  };
+  const opponent: TeamOffenseDefense = {
+    offense: avgOpponentStrength,
+    defense: avgOpponentStrength,
+  };
 
-  // Logistic function: win% = 1 / (1 + e^(-k * diff))
-  // k = 0.1 gives reasonable spread
-  const k = 0.1;
-  const basePct = 1 / (1 + Math.exp(-k * strengthDiff));
-
-  // Clamp between .250 and .750 for realistic bounds
-  return Math.max(0.250, Math.min(0.750, basePct));
+  return calculateExpectedWinPctPythagorean(team, opponent);
 }
 
 /**
- * Simulate a season's win-loss record with variance
+ * Simulate a season's win-loss record with Gaussian variance
+ * Uses more realistic variance modeling than simple random
  */
 export function simulateSeasonRecord(
   expectedWinPct: number,
   totalGames: number
 ): { wins: number; losses: number; actualWinPct: number } {
-  // Add variance to each game simulation
   let wins = 0;
 
   for (let i = 0; i < totalGames; i++) {
-    // Add game-by-game variance
-    const gameVariance = (Math.random() * 0.1) - 0.05;
-    const adjustedWinProb = Math.max(0.1, Math.min(0.9, expectedWinPct + gameVariance));
+    // Use Gaussian variance for more realistic game-by-game fluctuations
+    // Standard deviation of ~0.03 creates realistic streakiness
+    const gameVariance = randomNormalBounded(0, 0.03, -0.08, 0.08);
+    const adjustedWinProb = Math.max(0.15, Math.min(0.85, expectedWinPct + gameVariance));
 
     if (Math.random() < adjustedWinProb) {
       wins++;
@@ -340,6 +405,7 @@ interface AttendanceResult {
  * × (0.7 + cityPride/100 × 0.8)
  * × (1 - unemployment/100 × 0.5)
  * × (0.8 + stadiumQuality/100 × 0.4)
+ * × fanMult (from ENTERTAINMENT district buildings)
  */
 export function calculateAttendance(
   stadiumCapacity: number,
@@ -347,7 +413,8 @@ export function calculateAttendance(
   cityPride: number,
   unemploymentRate: number,
   stadiumQuality: number,
-  totalHomeGames: number
+  totalHomeGames: number,
+  fanMult: number = 1.0 // District bonus from ENTERTAINMENT buildings
 ): AttendanceResult {
   // Base attendance is 40% of capacity
   let baseAttendance = stadiumCapacity * 0.4;
@@ -367,6 +434,9 @@ export function calculateAttendance(
   // Stadium quality multiplier (0.8x to 1.2x)
   const qualityMultiplier = 0.8 + (stadiumQuality / 100) * 0.4;
   baseAttendance *= qualityMultiplier;
+
+  // Apply ENTERTAINMENT district bonus (restaurants, bars boost fan engagement)
+  baseAttendance *= fanMult;
 
   // Add some game-to-game variance
   const variance = 0.9 + Math.random() * 0.2;
@@ -395,6 +465,9 @@ export interface SeasonSimulationInput {
   unemploymentRate: number;
   aiTeams: AITeam[];
   tierConfigs: typeof TIER_CONFIGS;
+  // District bonuses (optional - defaults to 1.0 multipliers)
+  fanMult?: number;       // ENTERTAINMENT district bonus for attendance
+  trainingMult?: number;  // PERFORMANCE district bonus for player development
 }
 
 /**
@@ -418,6 +491,8 @@ export function simulateSeason(input: SeasonSimulationInput): SeasonSimulationRe
     unemploymentRate,
     aiTeams,
     tierConfigs,
+    fanMult = 1.0,      // Default to no bonus
+    trainingMult = 1.0, // Default to no bonus
   } = input;
 
   const totalGames = SEASON_CONFIG.GAMES_BY_TIER[tier];
@@ -453,22 +528,28 @@ export function simulateSeason(input: SeasonSimulationInput): SeasonSimulationRe
     tier
   );
 
-  // 5. Calculate attendance
+  // 5. Calculate attendance (with ENTERTAINMENT district bonus)
   const attendance = calculateAttendance(
     stadiumCapacity,
     playerStanding.winPct,
     cityPride,
     unemploymentRate,
     stadiumQuality,
-    homeGames
+    homeGames,
+    fanMult  // Apply ENTERTAINMENT district bonus
   );
 
-  // 6. Calculate player growth
+  // 6. Calculate player growth (with PERFORMANCE district bonus)
+  // The trainingMult boosts the effective coaching skills
+  const boostedHittingCoach = Math.round(hittingCoachSkill * trainingMult);
+  const boostedPitchingCoach = Math.round(pitchingCoachSkill * trainingMult);
+  const boostedDevCoord = Math.round(developmentCoordSkill * trainingMult);
+
   const playerGrowthResults = calculateRosterGrowth(
     players,
-    hittingCoachSkill,
-    pitchingCoachSkill,
-    developmentCoordSkill,
+    Math.min(80, boostedHittingCoach),  // Cap at 80
+    Math.min(80, boostedPitchingCoach), // Cap at 80
+    Math.min(80, boostedDevCoord),      // Cap at 80
     tierConfigs
   );
 

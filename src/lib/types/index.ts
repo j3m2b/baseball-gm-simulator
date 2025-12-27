@@ -208,6 +208,53 @@ export interface HiddenTraits {
   clutch: number;        // 20-80
 }
 
+// ============================================
+// SEASON STATISTICS TYPES
+// ============================================
+
+export interface BatterSeasonStats {
+  games: number;
+  plateAppearances: number;
+  atBats: number;
+  hits: number;
+  doubles: number;
+  triples: number;
+  homeRuns: number;
+  runs: number;
+  rbi: number;
+  walks: number;
+  strikeouts: number;
+  stolenBases: number;
+  caughtStealing: number;
+  battingAvg: number;    // .305 format
+  obp: number;           // .380 format
+  slg: number;           // .520 format
+  ops: number;           // .900 format
+  war: number;           // 3.5 format
+}
+
+export interface PitcherSeasonStats {
+  games: number;
+  gamesStarted: number;
+  wins: number;
+  losses: number;
+  saves: number;
+  inningsPitched: number;
+  hits: number;
+  runs: number;
+  earnedRuns: number;
+  walks: number;
+  strikeouts: number;
+  homeRunsAllowed: number;
+  era: number;           // 3.45 format
+  whip: number;          // 1.15 format
+  kPer9: number;         // 9.5 format
+  bbPer9: number;        // 2.3 format
+  war: number;           // 2.5 format
+}
+
+export type PlayerSeasonStats = BatterSeasonStats | PitcherSeasonStats;
+
 export interface Player {
   id: string;
   gameId: string;
@@ -249,6 +296,9 @@ export interface Player {
   isOnRoster: boolean;
   rosterStatus: RosterStatus; // ACTIVE (25-man) or RESERVE (farm system)
 
+  // Season Statistics (populated after season simulation)
+  seasonStats: PlayerSeasonStats | null;
+
   // Draft Info
   draftYear: number;
   draftRound: number;
@@ -259,7 +309,7 @@ export interface Player {
   updatedAt: Date;
 }
 
-export interface DraftProspect extends Omit<Player, 'id' | 'gameId' | 'tier' | 'yearsAtTier' | 'confidence' | 'morale' | 'gamesPlayed' | 'yearsInOrg' | 'salary' | 'contractYears' | 'isInjured' | 'injuryGamesRemaining' | 'isOnRoster' | 'rosterStatus' | 'draftYear' | 'draftRound' | 'draftPick' | 'createdAt' | 'updatedAt'> {
+export interface DraftProspect extends Omit<Player, 'id' | 'gameId' | 'tier' | 'yearsAtTier' | 'confidence' | 'morale' | 'gamesPlayed' | 'yearsInOrg' | 'salary' | 'contractYears' | 'isInjured' | 'injuryGamesRemaining' | 'isOnRoster' | 'rosterStatus' | 'seasonStats' | 'draftYear' | 'draftRound' | 'draftPick' | 'createdAt' | 'updatedAt'> {
   prospectId: string;
   scoutedRating: number | null;  // What we think the rating is
   scoutedPotential: number | null;
@@ -381,12 +431,78 @@ export interface CurrentFranchise {
 // CITY STATE TYPES
 // ============================================
 
+// District types determine which bonuses a building provides
+export type DistrictType = 'COMMERCIAL' | 'ENTERTAINMENT' | 'PERFORMANCE';
+
+// District bonuses multipliers
+export interface DistrictBonuses {
+  incomeMult: number;     // COMMERCIAL: Boosts budget/revenue
+  fanMult: number;        // ENTERTAINMENT: Boosts pride & attendance
+  trainingMult: number;   // PERFORMANCE: Boosts player XP & recovery
+}
+
+// Default bonuses (no buildings)
+export const DEFAULT_DISTRICT_BONUSES: DistrictBonuses = {
+  incomeMult: 1.0,
+  fanMult: 1.0,
+  trainingMult: 1.0,
+};
+
+// Building configuration with district effects
+export interface BuildingConfig {
+  type: BuildingType;
+  district: DistrictType;
+  baseBonus: number;           // Base bonus when state = 2 (Open)
+  expandedBonus: number;       // Bonus when state = 3 (Expanded)
+  landmarkBonus: number;       // Bonus when state = 4 (Landmark)
+}
+
+// Building district mappings and effect values
+export const BUILDING_DISTRICT_CONFIG: Record<BuildingType, BuildingConfig> = {
+  restaurant: {
+    type: 'restaurant',
+    district: 'ENTERTAINMENT',
+    baseBonus: 0.02,      // +2% fan bonus when open
+    expandedBonus: 0.04,  // +4% when expanded
+    landmarkBonus: 0.08,  // +8% when landmark
+  },
+  bar: {
+    type: 'bar',
+    district: 'ENTERTAINMENT',
+    baseBonus: 0.025,
+    expandedBonus: 0.05,
+    landmarkBonus: 0.10,
+  },
+  retail: {
+    type: 'retail',
+    district: 'COMMERCIAL',
+    baseBonus: 0.02,      // +2% income bonus when open
+    expandedBonus: 0.04,
+    landmarkBonus: 0.08,
+  },
+  hotel: {
+    type: 'hotel',
+    district: 'COMMERCIAL',
+    baseBonus: 0.05,      // +5% income bonus (hotels are valuable)
+    expandedBonus: 0.08,
+    landmarkBonus: 0.15,
+  },
+  corporate: {
+    type: 'corporate',
+    district: 'PERFORMANCE',
+    baseBonus: 0.03,      // +3% training bonus
+    expandedBonus: 0.06,
+    landmarkBonus: 0.12,
+  },
+};
+
 export interface Building {
   id: number;           // 0-49
   type: BuildingType;
   state: BuildingState;
   name: string | null;  // Named when state >= 2
   yearOpened: number | null;
+  district: DistrictType; // District type for bonus calculation
 }
 
 export interface CityState {
@@ -405,6 +521,9 @@ export interface CityState {
   // Buildings (50 total)
   buildings: Building[];
   occupancyRate: number;  // Calculated: buildings with state >= 2 / 50
+
+  // District Bonuses (calculated from active buildings)
+  districtBonuses: DistrictBonuses;
 
   updatedAt: Date;
 }
@@ -666,11 +785,16 @@ export interface CityGrowthResult {
   newPride: number;
   newRecognition: number;
 
+  // District bonuses calculated from all active buildings
+  districtBonuses: DistrictBonuses;
+
   buildingChanges: {
     buildingId: number;
     previousState: BuildingState;
     newState: BuildingState;
     newName?: string;
+    newType?: BuildingType;
+    newDistrict?: DistrictType;
   }[];
 
   events: Omit<GameEvent, 'id' | 'gameId' | 'createdAt'>[];

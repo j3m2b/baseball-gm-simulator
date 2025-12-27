@@ -62,6 +62,23 @@ interface GameDashboardProps {
     tier: string;
     salary: number;
     roster_status: 'ACTIVE' | 'RESERVE';
+    season_stats?: {
+      // Batter stats
+      games?: number;
+      atBats?: number;
+      hits?: number;
+      homeRuns?: number;
+      rbi?: number;
+      battingAvg?: number;
+      ops?: number;
+      war?: number;
+      // Pitcher stats
+      wins?: number;
+      losses?: number;
+      era?: number;
+      strikeouts?: number;
+      inningsPitched?: number;
+    } | null;
   }>;
   draftState: {
     id: string;
@@ -97,6 +114,16 @@ interface GameDashboardProps {
     effects?: unknown;
     duration_years?: number | null;
   }>;
+  seasonRecord?: {
+    wins: number;
+    losses: number;
+    winPct: number;
+    divisionRank: number;
+    gamesBack: number;
+    expectedWins: number;
+    expectedLosses: number;
+    pythagoreanLuck: number;
+  } | null;
 }
 
 export default function GameDashboard({
@@ -105,6 +132,7 @@ export default function GameDashboard({
   draftState,
   prospects,
   events,
+  seasonRecord,
 }: GameDashboardProps) {
   const [activeTab, setActiveTab] = useState(() => {
     // Default to appropriate tab based on phase
@@ -338,6 +366,7 @@ export default function GameDashboard({
                   city={city}
                   roster={roster}
                   events={events}
+                  seasonRecord={seasonRecord}
                 />
               </TabsContent>
 

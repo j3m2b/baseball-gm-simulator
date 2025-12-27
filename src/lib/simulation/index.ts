@@ -2,6 +2,50 @@
 // Simulation Engine - Main Export
 // ============================================
 
+// Math Engine (Advanced Statistical Models)
+export {
+  // Pythagorean Expectation
+  pythagoreanExpectation,
+  calculateExpectedRuns,
+  simulateGameOutcome,
+
+  // Log5 Method
+  log5HitProbability,
+  adjustProbabilitiesForPitcher,
+
+  // Probability Calculations
+  calculateBatterProbabilities,
+  calculatePitcherProbabilities,
+
+  // Plate Appearance Simulation
+  simulatePlateAppearance,
+  simulateFullGame,
+
+  // Season Projections
+  projectSeasonStats,
+  validateRatingScale,
+
+  // Random Number Generation
+  randomNormal,
+  randomNormalBounded,
+  weightedRandomChoice,
+
+  // Constants
+  LEAGUE_BASELINES,
+
+  // Types
+  type TeamOffenseDefense,
+  type PlateAppearanceOutcome,
+  type BatterProbabilities,
+  type GamePlayerStats,
+  type PitcherGameStats,
+  type GameSimulationResult,
+  type BatterInfo,
+  type PitcherInfo,
+  type SeasonProjection,
+  type RatingValidation,
+} from './math-engine';
+
 // Player Development
 export {
   calculatePlayerGrowth,
@@ -20,15 +64,24 @@ export {
 
 // Season Simulation
 export {
+  // Team Strength (Pythagorean-based)
+  calculateTeamOffenseDefense,
   calculateTeamStrength,
+  calculateAITeamOffenseDefense,
   calculateAITeamStrength,
+
+  // Win Probability (Pythagorean Expectation)
+  calculateExpectedWinPctPythagorean,
   calculateExpectedWinPct,
   simulateSeasonRecord,
+
+  // Standings & Playoffs
   simulateLeagueStandings,
   simulatePlayoffs,
   calculateAttendance,
   simulateSeason,
   checkPromotionEligibility,
+
   type SeasonSimulationInput,
 } from './season';
 
@@ -62,6 +115,9 @@ export {
   generateCityEvents,
   simulateCityGrowth,
   generateInitialCity,
+  // District bonuses
+  calculateCityBonuses,
+  getDistrictSummary,
   type SeasonSuccessInput,
   type BuildingUpgrade,
   type CityMetricsUpdate,

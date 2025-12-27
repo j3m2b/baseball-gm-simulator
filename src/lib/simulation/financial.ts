@@ -10,7 +10,10 @@ import type {
   CityState,
   Player,
   TIER_CONFIGS,
+  DistrictBonuses,
 } from '@/lib/types';
+
+import { DEFAULT_DISTRICT_BONUSES } from '@/lib/types';
 
 // ============================================
 // CONFIGURATION
@@ -229,6 +232,8 @@ export interface FinancialSimulationInput {
 
 /**
  * Run complete financial simulation for a season
+ *
+ * District bonuses from COMMERCIAL buildings boost revenue via incomeMult
  */
 export function simulateFinances(
   input: FinancialSimulationInput
@@ -241,6 +246,9 @@ export function simulateFinances(
     wonChampionship,
     marketingSpend,
   } = input;
+
+  // Get district bonuses (default to 1.0 if not set)
+  const districtBonuses: DistrictBonuses = cityState.districtBonuses || DEFAULT_DISTRICT_BONUSES;
 
   // Calculate all revenue streams
   const ticketRevenue = calculateTicketRevenue(
@@ -267,12 +275,15 @@ export function simulateFinances(
     wonChampionship
   );
 
-  const totalRevenue =
+  // Apply COMMERCIAL district income multiplier to total revenue
+  const baseRevenue =
     ticketRevenue +
     concessionRevenue +
     parkingRevenue +
     merchandiseRevenue +
     sponsorshipRevenue;
+
+  const totalRevenue = Math.round(baseRevenue * districtBonuses.incomeMult);
 
   // Calculate all expenses
   const playerSalaries = calculatePlayerSalaries(players);
