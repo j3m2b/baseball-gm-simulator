@@ -140,3 +140,41 @@
 .animate-marquee:hover {
   animation-play-state: paused;
 }
+
+/* Isometric City Animations */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0) translateX(0);
+    opacity: 0.3;
+  }
+  50% {
+    transform: translateY(-20px) translateX(10px);
+    opacity: 0.6;
+  }
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+/* 3D preserve for isometric transforms */
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+/* Isometric building grow animation */
+@keyframes grow-building {
+  0% {
+    transform: scaleY(0) translateZ(0);
+    opacity: 0;
+  }
+  100% {
+    transform: scaleY(1) translateZ(var(--building-height, 24px));
+    opacity: 1;
+  }
+}
+
+.animate-grow {
+  animation: grow-building 0.5s ease-out forwards;
+  transform-origin: bottom;
+}

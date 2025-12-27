@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { formatCurrency } from '@/lib/utils/format';
 import { constructBuilding } from '@/lib/actions/game';
-import CityMap from '../city/CityMap';
+import { IsoGrid, CityAtmosphere } from '../city/iso';
 import BuildMenu from '../city/BuildMenu';
 import DistrictBonusPanel from '../city/DistrictBonusPanel';
 import type { Building, BuildingType, Tier } from '@/lib/types';
@@ -130,12 +130,25 @@ export default function CityTab({
       {/* District Bonus Panel */}
       <DistrictBonusPanel buildings={buildings} />
 
-      {/* City Map */}
-      <CityMap
-        buildings={buildings}
-        onSlotClick={handleSlotClick}
-        reserves={reserves}
-      />
+      {/* Isometric City View */}
+      <Card className="bg-gray-900 border-gray-800 overflow-hidden">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <span>🏙️</span>
+            <span>City View</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="py-6">
+          <CityAtmosphere fanPride={city.team_pride} tier={currentTier}>
+            <IsoGrid
+              buildings={buildings}
+              onSlotClick={handleSlotClick}
+              tier={currentTier}
+              fanPride={city.team_pride}
+            />
+          </CityAtmosphere>
+        </CardContent>
+      </Card>
 
       {/* City Growth Guide */}
       <Card className="bg-gray-900 border-gray-800">

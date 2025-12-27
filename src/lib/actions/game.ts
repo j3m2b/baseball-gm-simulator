@@ -267,51 +267,61 @@ export async function getSavedGames() {
 // ============================================
 
 export async function deleteGame(gameId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient();
+  try {
+    const supabase = await createClient();
 
-  // Get authenticated user
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+    // Get authenticated user - use getUser() which validates the session with Supabase
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-  if (authError || !user) {
-    console.error('Auth error in deleteGame:', authError);
-    return { success: false, error: 'You must be logged in to delete a game' };
+    if (authError) {
+      console.error('Auth error in deleteGame:', authError.message, authError.status);
+      return { success: false, error: 'Authentication failed. Please try logging in again.' };
+    }
+
+    if (!user) {
+      console.error('No user found in deleteGame - session may have expired');
+      return { success: false, error: 'You must be logged in to delete a game. Please refresh and try again.' };
+    }
+
+    // Verify the game exists and belongs to the current user
+    const { data: game, error: fetchError } = await supabase
+      .from('games')
+      .select('id, user_id')
+      .eq('id', gameId)
+      .eq('user_id', user.id)
+      .single();
+
+    if (fetchError) {
+      console.error('Error fetching game for deletion:', fetchError.message);
+      return { success: false, error: 'Game not found or access denied' };
+    }
+
+    if (!game) {
+      return { success: false, error: 'Game not found or you do not have permission to delete it' };
+    }
+
+    // Delete the game - Supabase will handle cascading deletes
+    // for related tables (players, city_states, current_franchise, etc.)
+    // thanks to ON DELETE CASCADE foreign key constraints
+    const { error: deleteError } = await supabase
+      .from('games')
+      .delete()
+      .eq('id', gameId)
+      .eq('user_id', user.id); // CRITICAL: Include user_id to ensure RLS compliance
+
+    if (deleteError) {
+      console.error('Error deleting game:', deleteError.message);
+      return { success: false, error: `Failed to delete game: ${deleteError.message}` };
+    }
+
+    // Revalidate the homepage so the game list refreshes
+    revalidatePath('/');
+
+    return { success: true };
+  } catch (err) {
+    console.error('Unexpected error in deleteGame:', err);
+    return { success: false, error: 'An unexpected error occurred. Please try again.' };
   }
-
-  // Verify the game exists and belongs to the current user
-  const { data: game, error: fetchError } = await supabase
-    .from('games')
-    .select('id, user_id')
-    .eq('id', gameId)
-    .eq('user_id', user.id)
-    .single();
-
-  if (fetchError) {
-    console.error('Error fetching game for deletion:', fetchError);
-    return { success: false, error: 'Game not found or access denied' };
-  }
-
-  if (!game) {
-    return { success: false, error: 'Game not found or you do not have permission to delete it' };
-  }
-
-  // Delete the game - Supabase will handle cascading deletes
-  // for related tables (players, city_states, current_franchise, etc.)
-  // thanks to ON DELETE CASCADE foreign key constraints
-  const { error: deleteError } = await supabase
-    .from('games')
-    .delete()
-    .eq('id', gameId)
-    .eq('user_id', user.id); // CRITICAL: Include user_id to ensure RLS compliance
-
-  if (deleteError) {
-    console.error('Error deleting game:', deleteError);
-    return { success: false, error: `Failed to delete game: ${deleteError.message}` };
-  }
-
-  // Revalidate the homepage so the game list refreshes
-  revalidatePath('/');
-
-  return { success: true };
 }
 
 // ============================================
