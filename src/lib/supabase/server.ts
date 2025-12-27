@@ -2,9 +2,10 @@ import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import type { Database } from '@/lib/types/database';
 
-export async function createClient() {
-  const cookieStore = await cookies();
+// Define the type for the awaited cookie store (Next.js 16+)
+type CookieStore = Awaited<ReturnType<typeof cookies>>;
 
+export function createClient(cookieStore: CookieStore) {
   return createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,

@@ -1,5 +1,6 @@
 'use server';
 
+import { cookies } from 'next/headers';
 import { createClient } from '@/lib/supabase/server';
 import { revalidatePath } from 'next/cache';
 import { generateInitialCity, calculateCityBonuses } from '@/lib/simulation/city-growth';
@@ -54,7 +55,7 @@ type NewsStoryRow = Database['public']['Tables']['news_stories']['Row'];
 // ============================================
 
 export async function createGame(formData: FormData) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const cityName = formData.get('cityName') as string;
   const teamName = formData.get('teamName') as string || `${cityName} Baseball Club`;
@@ -210,7 +211,7 @@ export async function createGame(formData: FormData) {
 // ============================================
 
 export async function getGame(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: game, error } = await supabase
     .from('games')
@@ -238,7 +239,7 @@ export async function getGame(gameId: string) {
 // ============================================
 
 export async function getSavedGames() {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: games, error } = await supabase
     .from('games')
@@ -268,7 +269,7 @@ export async function getSavedGames() {
 
 export async function deleteGame(gameId: string): Promise<{ success: boolean; error?: string }> {
   try {
-    const supabase = await createClient();
+    const supabase = createClient(await cookies());
 
     // Get authenticated user - use getUser() which validates the session with Supabase
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -329,7 +330,7 @@ export async function deleteGame(gameId: string): Promise<{ success: boolean; er
 // ============================================
 
 export async function getPlayerRoster(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: players, error } = await supabase
     .from('players')
@@ -351,7 +352,7 @@ export async function getPlayerRoster(gameId: string) {
 // ============================================
 
 export async function getDraftProspects(gameId: string, year: number) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: prospects, error } = await supabase
     .from('draft_prospects')
@@ -374,7 +375,7 @@ export async function getDraftProspects(gameId: string, year: number) {
 // ============================================
 
 export async function getDraftState(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: game } = await supabase
     .from('games')
@@ -410,7 +411,7 @@ export async function scoutProspect(
   prospectId: string,
   accuracy: 'low' | 'medium' | 'high'
 ) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get prospect's true ratings
   const { data: prospect, error: prospectError } = await supabase
@@ -528,7 +529,7 @@ export async function scoutProspect(
 export async function draftPlayer(gameId: string, prospectId: string) {
   console.log('[draftPlayer] Called with gameId:', gameId, 'prospectId:', prospectId);
 
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current draft state
   const draft = await getDraftState(gameId);
@@ -705,7 +706,7 @@ export async function draftPlayer(gameId: string, prospectId: string) {
 // ============================================
 
 export async function simulateAIDraftPicks(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const draft = await getDraftState(gameId);
   if (!draft || draft.is_complete) {
@@ -836,7 +837,7 @@ export interface DraftSimulationResult {
  * Marks all undrafted players as free agents when complete.
  */
 export async function simulateDraftRemainder(gameId: string): Promise<DraftSimulationResult> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const draft = await getDraftState(gameId);
   if (!draft) {
@@ -1086,7 +1087,7 @@ export interface RosterOptimizationResult {
  * - Sets pitching rotation and closer
  */
 export async function optimizeRoster(gameId: string): Promise<RosterOptimizationResult> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get all rostered players
   const { data: players, error } = await supabase
@@ -1213,7 +1214,7 @@ export interface DraftCompletionResult {
  * This is the main entry point for the "Sim to End & Start Season" button.
  */
 export async function completeDraftAndTransition(gameId: string): Promise<DraftCompletionResult> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Step 1: Simulate all remaining draft picks
   const draftResults = await simulateDraftRemainder(gameId);
@@ -1304,7 +1305,7 @@ export async function completeDraftAndTransition(gameId: string): Promise<DraftC
 // ============================================
 
 export async function advancePhase(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: game, error: gameError } = await supabase
     .from('games')
@@ -1409,7 +1410,7 @@ export async function advancePhase(gameId: string) {
 // ============================================
 
 export async function getRecentEvents(gameId: string, limit: number = 5) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: events, error } = await supabase
     .from('game_events')
@@ -1449,7 +1450,7 @@ interface PlayerInfo {
 }
 
 export async function getDraftPicks(gameId: string, year: number) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get all draft picks with player info
   const { data: picks, error } = await supabase
@@ -1521,7 +1522,7 @@ export async function getDraftPicks(gameId: string, year: number) {
 // ============================================
 
 export async function refreshProspects(gameId: string, year: number) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: prospects, error } = await supabase
     .from('draft_prospects')
@@ -1592,7 +1593,7 @@ type SeasonRow = Database['public']['Tables']['seasons']['Row'];
 
 // Initialize or get current season
 export async function initializeSeasonSimulation(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get game state
   const { data: game } = await supabase
@@ -1679,7 +1680,7 @@ export async function simulateSeasonBatch(
   gameId: string,
   gamesToSimulate: number = 10
 ) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current season state with team name
   const { data: game } = await supabase
@@ -2093,7 +2094,7 @@ export async function setPlayerTrainingFocus(
   playerId: string,
   trainingFocus: TrainingFocus
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   try {
     // Verify player belongs to game
@@ -2151,7 +2152,7 @@ export async function setBatchTrainingFocus(
   gameId: string,
   playerFocuses: Array<{ playerId: string; trainingFocus: TrainingFocus }>
 ): Promise<{ success: boolean; updated: number; error?: string }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   let updated = 0;
 
@@ -2192,7 +2193,7 @@ export async function getTrainingSummary(gameId: string): Promise<{
   };
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   try {
     // Get roster
@@ -2315,7 +2316,7 @@ export async function getGameLog(
   limit: number = 50,
   offset: number = 0
 ): Promise<{ success: boolean; games?: GameLogEntry[]; total?: number; error?: string }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   try {
     // Get total count
@@ -2384,7 +2385,7 @@ export async function getBoxScore(
   gameId: string,
   gameResultId: string
 ): Promise<{ success: boolean; boxScore?: GameResult; error?: string }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   try {
     const { data, error } = await supabase
@@ -2458,7 +2459,7 @@ export async function getBoxScore(
 
 // Complete the season and calculate final results
 export async function completeSeasonSimulation(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get all relevant data
   const { data: game } = await supabase
@@ -2912,7 +2913,7 @@ function getOrdinalSuffix(n: number): string {
 
 // Get current season state
 export async function getSeasonState(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: game } = await supabase
     .from('games')
@@ -2956,7 +2957,7 @@ export async function getSeasonState(gameId: string) {
 // ============================================
 
 export async function promoteTier(gameId: string) {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current game state
   const { data: game } = await supabase
@@ -3119,7 +3120,7 @@ export async function movePlayer(
   playerId: string,
   destination: RosterStatus
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get player data
   const { data: player } = await supabase
@@ -3212,7 +3213,7 @@ export async function getRosterCounts(gameId: string): Promise<{
   reserveMax: number;
   facilityLevel: FacilityLevel;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get facility level
   const { data: franchise } = await supabase
@@ -3254,7 +3255,7 @@ export async function upgradeFacility(gameId: string): Promise<{
   newLevel?: FacilityLevel;
   cost?: number;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current franchise state
   const { data: franchise } = await supabase
@@ -3328,7 +3329,7 @@ export async function getNewsStories(
   gameId: string,
   limit: number = 50
 ): Promise<NewsStory[]> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: stories, error } = await supabase
     .from('news_stories')
@@ -3364,7 +3365,7 @@ export async function getBreakingNewsStories(
   gameId: string,
   limit: number = 5
 ): Promise<NewsStory[]> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: stories, error } = await supabase
     .from('news_stories')
@@ -3400,7 +3401,7 @@ export async function addNewsStory(
   gameId: string,
   story: Omit<NewsStory, 'id'>
 ): Promise<{ success: boolean; error?: string; story?: NewsStory }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data, error } = await supabase
     .from('news_stories')
@@ -3454,7 +3455,7 @@ export async function addNewsStories(
     return { success: true, count: 0 };
   }
 
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const insertData = stories.map(story => ({
     game_id: gameId,
@@ -3521,7 +3522,7 @@ export async function generateCityNews(
  * Clean up old news stories to maintain the 50-story limit
  */
 export async function cleanupOldNews(gameId: string): Promise<void> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get the ID of the 50th newest story
   const { data: cutoffStory } = await supabase
@@ -3567,7 +3568,7 @@ export async function constructBuilding(
   error?: string;
   building?: Building;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current city and franchise state
   const { data: cityData } = await supabase
@@ -3673,7 +3674,7 @@ export async function getCityState(gameId: string): Promise<{
   teamPride: number;
   occupancyRate: number;
 } | null> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data, error } = await supabase
     .from('city_states')
@@ -3708,7 +3709,7 @@ export async function getCityState(gameId: string): Promise<{
  * Get team payroll summary
  */
 export async function getPayrollSummary(gameId: string): Promise<PayrollSummary | null> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current tier
   const { data: game } = await supabase
@@ -3754,7 +3755,7 @@ export async function getExpiringContracts(gameId: string): Promise<Array<{
   salary: number;
   contractYears: number;
 }>> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: players, error } = await supabase
     .from('players')
@@ -3788,7 +3789,7 @@ export async function generatePlayerContractOffer(
   gameId: string,
   playerId: string
 ): Promise<{ success: boolean; error?: string; offer?: ContractOffer }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get player data
   const { data: player } = await supabase
@@ -3828,7 +3829,7 @@ export async function extendPlayerContract(
   newYears?: number;
   accepted?: boolean;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get player data
   const { data: player } = await supabase
@@ -3991,7 +3992,7 @@ export async function releasePlayer(
   gameId: string,
   playerId: string
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get player data
   const { data: player } = await supabase
@@ -4043,7 +4044,7 @@ export async function processEndOfSeasonContracts(
   results: FreeAgentResult[];
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get all players with contracts expiring (years = 1, will be 0 after decrement)
   const { data: expiringPlayers } = await supabase
@@ -4174,7 +4175,7 @@ export async function processEndOfSeasonContracts(
  * Decrement contract years for all players
  */
 async function decrementAllContracts(gameId: string): Promise<void> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get all rostered players
   const { data: players } = await supabase
@@ -4207,7 +4208,7 @@ export async function migratePlayerContracts(gameId: string): Promise<{
   migratedCount: number;
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get game tier
   const { data: game } = await supabase
@@ -4313,7 +4314,7 @@ export async function getFreeAgents(gameId: string): Promise<{
   freeAgents: FreeAgent[];
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current tier for salary calculations
   const { data: game } = await supabase
@@ -4408,7 +4409,7 @@ export async function signFreeAgent(
   freeAgentId: string,
   offerAmount: number
 ): Promise<SignFreeAgentResult> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Determine if this is a prospect or a released player
   const isReleasedPlayer = freeAgentId.startsWith('player-');
@@ -4673,7 +4674,7 @@ export async function initializePlayoffs(gameId: string): Promise<{
   standings?: PlayoffStanding[];
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current game state
   const { data: game } = await supabase
@@ -4797,7 +4798,7 @@ export async function getPlayoffBracket(gameId: string): Promise<{
   standings?: PlayoffStanding[];
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current year
   const { data: game } = await supabase
@@ -4962,7 +4963,7 @@ export async function simulatePlayoffSeriesGame(
   winnerName?: string | null;
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get franchise for stadium capacity
   const { data: franchise } = await supabase
@@ -5114,7 +5115,7 @@ export async function advancePlayoffs(gameId: string): Promise<{
   championName?: string;
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current bracket
   const { data: game } = await supabase
@@ -5330,7 +5331,7 @@ export async function simulateEntireSeries(
   }
 
   // Get final series state
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
   const { data: seriesRow } = await supabase
     .from('playoff_series')
     .select('team1_wins, team2_wins, winner_id, winner_name')
@@ -5401,7 +5402,7 @@ export async function getSeasonSummary(gameId: string): Promise<{
   summary?: SeasonSummaryData;
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get game data
   const { data: game } = await supabase
@@ -5588,7 +5589,7 @@ export interface AdvanceSeasonResult {
  * Advance to the next season - main rollover function
  */
 export async function advanceToNextSeason(gameId: string): Promise<AdvanceSeasonResult> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   // Get current game state
   const { data: game } = await supabase
@@ -5951,7 +5952,7 @@ export async function getTeamHistory(gameId: string): Promise<{
   history?: TeamHistoryEntry[];
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: history, error } = await supabase
     .from('team_history')
@@ -5991,7 +5992,7 @@ export async function getPlayerCareerStats(playerId: string): Promise<{
   careerStats?: SeasonStatsSummary[];
   error?: string;
 }> {
-  const supabase = await createClient();
+  const supabase = createClient(await cookies());
 
   const { data: player, error } = await supabase
     .from('players')
